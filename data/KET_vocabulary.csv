@@ -13,7 +13,7 @@ actor,n,Entertainment and Media; Work and Jobs
 actually,adv,
 add,v,
 address,n,Communication and Technology; House and Home
-adult,adj & n,
+adult,adj & n,Family and Friends
 advanced,adj,Education
 adventure,n,Entertainment and Media
 advertisement,n,Documents and Texts; Entertainment and Media; Shopping
@@ -24,7 +24,7 @@ afternoon,n,Time
 afterwards,adv,
 again,adv,
 against,prep,
-age,n,
+age,n,Time
 ago,adv,
 agree,v,
 air,n,The Natural World
@@ -42,7 +42,7 @@ ambulance,n,"Health, Medicine and Exercise; Travel and Transport"
 among,prep,
 and,conj,
 angry,adj,"Personal Feelings, Opinions and Experiences"
-animal,n,
+animal,n,The Natural World
 another,det & pron,
 answer,n & v,
 any,det and pron,
@@ -70,7 +70,7 @@ assistant,n,Shopping
 at,prep,Communication and Technology
 at all,adv,
 August,n,Time
-aunt,n,
+aunt,n,Family and Friends
 autumn,n,Time
 away,adv,
 baby,n,"Health, Medicine and Exercise"
@@ -88,7 +88,7 @@ bath,n,House and Home
 bathroom,n,House and Home
 be,v,
 beach,n,Hobbies and Leisure; Places: Countryside; Sport; The Natural World
-bear,n,
+bear,n,The Natural World
 beautiful,adj,"Personal Feelings, Opinions and Experiences"
 because,conj,
 become,v,
@@ -108,15 +108,15 @@ bicycle,n,Hobbies and Leisure; Sport
 big,adj,"Personal Feelings, Opinions and Experiences"
 bike,n,Hobbies and Leisure; Sport
 bill,n,Documents and Texts; Shopping
-bird,n,
+bird,n,The Natural World
 birthday,n,Time
 biscuit,n,Food and Drink
 bit,n,
 bit of cake,n,Food and Drink
 black,adj,Colours
 blanket,n,House and Home
-blond,adj,
-blonde,adj,
+blond,adj,Colours
+blonde,adj,Colours
 blouse,n,Clothes and Accessories
 blue,adj,Colours
 board,n,Education
@@ -167,7 +167,7 @@ by post,adv,Communication and Technology
 cafe,n,Food and Drink; Places: Buildings; Services
 cake,n,Food and Drink
 call,v,Communication and Technology
-camel,n,
+camel,n,The Natural World
 camera,n,Appliances; Communication and Technology; Hobbies and Leisure
 camp,n & v,Hobbies and Leisure
 campsite,n,Hobbies and Leisure; Places: Countryside
@@ -176,7 +176,7 @@ canal,n,Places: Countryside; Travel and Transport
 car,n,Travel and Transport
 car park,n,Places: Town and City
 card,n,Documents and Texts; Entertainment and Media
-career,n,
+career,n,Work and Jobs
 careful,adj,"Personal Feelings, Opinions and Experiences"
 carpet,n,House and Home
 carrot,n,Food and Drink
@@ -184,23 +184,23 @@ carry,v,
 cartoon,n,Entertainment and Media
 cash,n & v,Shopping
 castle,n,Places: Buildings
-cat,n,
+cat,n,The Natural World
 catch,v,Sport
 cathedral,n,Places: Buildings
 CD,n,Appliances; Communication and Technology; Entertainment and Media; Hobbies and Leisure
 CD player,n,Appliances; Communication and Technology; Entertainment and Media; Hobbies and Leisure
 cent,n,Shopping
 centimetre,n,Measurements
-centre,n,
+centre,n,Places: Town and City
 century,n,Time
 certain,adj,"Personal Feelings, Opinions and Experiences"
 certainly not,adv,
 certainly,adv,
 chair,n,House and Home
 change,v & n,Shopping
-channel,n,
+channel,n,Entertainment and Media
 chat,n,Communication and Technology
-chatroom,n,
+chatroom,n,Communication and Technology
 cheap,adj,Shopping
 check,v,"Health, Medicine and Exercise"
 cheers,exclam,Food and Drink
@@ -215,12 +215,12 @@ choose,v,
 church,n,Places: Buildings
 cinema,n,Entertainment and Media; Places: Buildings; Services
 circus,n,Entertainment and Media
-city,n,
+city,n,Places: Town and City
 city centre,n,Places: Town and City
 class,n,Education
-class member,n,
+class member,n,Family and Friends
 classical,adj,Entertainment and Media
-classmate,n,
+classmate,n,Family and Friends
 classroom,n,Education
 clean,adj & v,"Health, Medicine and Exercise"
 cleaner,n,Work and Jobs
@@ -235,16 +235,16 @@ closed,adj,Shopping
 clothes,n pl,Clothes and Accessories
 cloud,n,Weather
 cloudy,adj,Weather
-clown,n,
+clown,n,Entertainment and Media
 club,n,Hobbies and Leisure; Sport
 coach,n,Education; Sport; Travel and Transport; Work and Jobs
 coat,n,Clothes and Accessories
 coffee,n,Food and Drink
 cold,adj & n,"Health, Medicine and Exercise; Weather"
-colleague,n,
+colleague,n,Family and Friends
 collect,v,Hobbies and Leisure
 college,n,Education; Places: Buildings
-colour,n,
+colour,n,Colours
 comb,n,"Health, Medicine and Exercise"
 come,v,
 comfortable,adj,
@@ -266,7 +266,7 @@ country,n,The Natural World; Travel and Transport
 countryside,n,The Natural World
 course,n,Education
 cousin,n,Family and Friends
-cow,n,
+cow,n,The Natural World
 cream,n,Food and Drink
 credit card,n,Shopping
 cross,v,
@@ -286,7 +286,7 @@ daddy,n,Family and Friends
 daily,adj & adv,Time
 dance,n & v,Entertainment and Media; Hobbies and Leisure
 dancer,n,Entertainment and Media
-dancing,n,
+dancing,n,Entertainment and Media; Hobbies and Leisure
 danger,n,"Health, Medicine and Exercise"
 dangerous,adj,"Health, Medicine and Exercise"
 dark,adj,Colours
@@ -301,7 +301,7 @@ degree,n,Measurements
 delay,n & v,Travel and Transport
 delayed,adj,Travel and Transport
 dentist,n,"Health, Medicine and Exercise; Services; Work and Jobs"
-department,n,
+department,n,Places: Town and City
 department store,n,Places: Buildings; Shopping
 describe,v,
 desk,n,Education; House and Home; Work and Jobs
@@ -318,20 +318,20 @@ dinosaur,n,
 diploma,n,Documents and Texts; Education; Work and Jobs
 dirty,adj,
 disco,n,Entertainment and Media; Places: Buildings
-discount,n,
+discount,n,Shopping
 dish,n,Food and Drink
 do,v,
 doctor,n,"Health, Medicine and Exercise; Services; Work and Jobs"
-dog,n,
+dog,n,The Natural World
 dollar,n,Shopping
-dolphin,n,
+dolphin,n,The Natural World
 door,n,House and Home
 dot,n,Communication and Technology
 double,adj,
 down,adv & prep,
 download,n & v,Communication and Technology
 downstairs,adv,House and Home
-dragon,n,
+dragon,n,The Natural World
 draw,v,Entertainment and Media; Hobbies and Leisure
 drawing,n,Entertainment and Media
 dream,n & v,
@@ -355,7 +355,7 @@ eat,v,Food and Drink
 egg,n,Food and Drink
 electric,adj,Appliances
 electricity,n,Appliances
-elephant,n,
+elephant,n,The Natural World
 else,adv,
 email,n & v,Communication and Technology; Documents and Texts; Work and Jobs
 empty,adj & v,
@@ -378,11 +378,11 @@ everything,pron,
 everywhere,adv,
 exam,n,Education
 examination,n,Education
-example,n,
+example,n,Education
 excellent,adj,"Personal Feelings, Opinions and Experiences"
 except,prep,
-excited,adj,
-exciting,adj,
+excited,adj,"Personal Feelings, Opinions and Experiences"
+exciting,adj,"Personal Feelings, Opinions and Experiences"
 excuse,v,
 exercise,n & v,"Health, Medicine and Exercise"
 exhibition,n,Entertainment and Media
@@ -399,13 +399,13 @@ fair,adj,
 fall,v,"Health, Medicine and Exercise"
 family,n,Family and Friends
 famous,adj,"Personal Feelings, Opinions and Experiences"
-fan,n,
+fan,n,Entertainment and Media
 far,adv,Travel and Transport
 farm,n,Places: Countryside; Work and Jobs
 farmer,n,Work and Jobs
 fashion,n,Clothes and Accessories
 fast,adj & adv,"Personal Feelings, Opinions and Experiences"
-fast food,n,
+fast food,n,Food and Drink
 fat,adj,
 father,n,Family and Friends
 favourite,adj,"Personal Feelings, Opinions and Experiences"
@@ -445,7 +445,7 @@ forget,v,
 fork,n,Food and Drink
 form,n,Documents and Texts
 free,adj,"Personal Feelings, Opinions and Experiences"
-fresh,adj,
+fresh,adj,Food and Drink
 Friday,n,Time
 fridge,n,Appliances; Food and Drink; House and Home
 fried,adj,Food and Drink
@@ -473,7 +473,7 @@ get on,phr v,
 get up,phr v,
 girl,n,Family and Friends
 give,v,
-glad,adj,
+glad,adj,"Personal Feelings, Opinions and Experiences"
 glass,n & adj,Food and Drink
 glasses,n pl,Clothes and Accessories
 go,v,
@@ -483,7 +483,6 @@ golf,n,Sport
 good,adj,"Personal Feelings, Opinions and Experiences"
 goodbye,exclam,
 gram,n,Measurements
-gramme,n,Measurements
 grandad,n,Family and Friends
 grandchild,n,Family and Friends
 granddad,n,Family and Friends
@@ -528,7 +527,7 @@ have to,v,
 he,pron,
 head,n,"Health, Medicine and Exercise"
 health,n,"Health, Medicine and Exercise"
-healthy,adj,
+healthy,adj,"Health, Medicine and Exercise"
 hear,v,"Health, Medicine and Exercise"
 heart,n,"Health, Medicine and Exercise"
 heating,n,Appliances; House and Home
@@ -555,7 +554,7 @@ holidays,n,Hobbies and Leisure; Time
 home,n & adv,House and Home
 homework,n,Education
 hope,v,
-horse,n,
+horse,n,The Natural World
 hospital,n,"Health, Medicine and Exercise; Places: Buildings"
 hot,adj,The Natural World; Weather
 hotel,n,Places: Buildings; Services
@@ -569,7 +568,7 @@ husband,n,Family and Friends
 I,pron,
 ice,n,Food and Drink; The Natural World; Weather
 ice cream,n,Food and Drink
-ice skating,n,
+ice skating,n,Hobbies and Leisure; Sport
 idea,n,
 if,conj,
 ill,adj,"Health, Medicine and Exercise"
@@ -583,7 +582,7 @@ include,v,
 indoor,adj,
 indoors,adv,
 information,n,Communication and Technology; Education
-insect,n,
+insect,n,The Natural World
 inside,adv & prep,
 instead,adv,
 instead of,prep phr,
@@ -619,12 +618,11 @@ keyboard,n,Communication and Technology; Entertainment and Media
 kg,n,Measurements
 kilo,n,Measurements
 kilogram,n,Measurements
-kilogramme,n,Measurements
 kilometre,n,Measurements
 kind,adj & n,"Personal Feelings, Opinions and Experiences"
 king,n,Work and Jobs
 kitchen,n,Food and Drink; House and Home
-kite,n,
+kite,n,Hobbies and Leisure
 km,n,Measurements
 knife,n,Food and Drink
 know,v,Education
@@ -659,7 +657,7 @@ light,n & adj,Colours; House and Home; Travel and Transport
 lights,n pl,Appliances
 like,"v, prep & adv",
 line,n,
-lion,n,
+lion,n,The Natural World
 listen,v,
 listen to,phr v,Entertainment and Media
 litre,n,Measurements
@@ -689,14 +687,14 @@ magazine,n,Documents and Texts; Entertainment and Media; Hobbies and Leisure
 main course,n,Food and Drink
 make,v,
 make up,n,
-man,n,
+man,n,Family and Friends
 manager,n,Work and Jobs
 many,"det, adj & pron",
 map,n,Travel and Transport
 March,n,Time
 market,n,Places: Town and City
 married,adj,"Family and Friends; Personal Feelings, Opinions and Experiences"
-match,n,
+match,n,Sport
 Mathematics,n,Education
 matter,v,
 May,n,Time
@@ -717,7 +715,7 @@ middle,n,
 midnight,n,Time
 mile,n,Measurements; Travel and Transport
 milk,n,Food and Drink
-million,n,
+million,n,Measurements
 mind,v,
 mine,pron,
 mineral water,n,Food and Drink
@@ -725,14 +723,14 @@ minute,n,Measurements; Time
 mirror,n,Travel and Transport
 Miss,n,Family and Friends
 miss,v,Travel and Transport
-mistake,n,
+mistake,n,Education
 mobile phone,n,Appliances; Communication and Technology
 mobile,n,Appliances; Communication and Technology
 modern,adj,"Personal Feelings, Opinions and Experiences"
 moment,n,Measurements; Time
 Monday,n,Time
 money,n,
-monkey,n,
+monkey,n,The Natural World
 month,n,Time
 monthly,adj & adv,Time
 moon,n,The Natural World
@@ -744,7 +742,7 @@ motorbike,n,Travel and Transport
 motorway,n,Places: Town and City; Travel and Transport
 mountain,n,Places: Countryside; The Natural World
 mouse,n,Communication and Technology
-mouth,n,
+mouth,n,"Health, Medicine and Exercise"
 move,v,Travel and Transport
 MP3 player,n,Appliances; Communication and Technology; Entertainment and Media; Hobbies and Leisure
 Mr,n,Family and Friends
@@ -762,7 +760,7 @@ myself,pron,
 name,n,
 national,adj,
 nationality,n,
-nature,n,
+nature,n,The Natural World
 near,adv & prep,
 nearly,adv,
 neck,n,"Health, Medicine and Exercise"
@@ -792,7 +790,7 @@ nothing,pron,
 November,n,Time
 now,adv,
 nowhere,adv,
-number,n,
+number,n,Measurements
 nurse,n,"Health, Medicine and Exercise; Work and Jobs"
 o'clock,adv,Time
 occupation,n,Work and Jobs
@@ -841,7 +839,7 @@ paper,n & adj,
 pardon,exclam,
 parent,n,Family and Friends
 park,n & v,Hobbies and Leisure; Places: Town and City; Travel and Transport
-parrot,n,
+parrot,n,The Natural World
 part,n,
 party,n,Hobbies and Leisure
 pass,v,
@@ -851,18 +849,18 @@ past,prep,Time
 pasta,n,Food and Drink
 path,n,Places: Countryside
 pay,v,Shopping
-pen,n,
+pen,n,Education
 pen-friend,n,Family and Friends
 pence,n pl,Shopping
-pencil,n,
-pencil case,n,
+pencil,n,Education
+pencil case,n,Education
 penny,n,Shopping
-people,n pl,
+people,n pl,Family and Friends
 pepper,n,Food and Drink
 per,prep,
 perhaps,adv,
-person,n,
-pet,n,
+person,n,Family and Friends
+pet,n,The Natural World
 petrol,n,Travel and Transport
 petrol station,n,Places: Town and City; Travel and Transport
 pharmacy,n,"Health, Medicine and Exercise; Work and Jobs"
@@ -907,7 +905,7 @@ possible,adj,
 post,v & n,
 post office,n,Places: Buildings; Services
 postcard,n,Documents and Texts
-poster,n,
+poster,n,Entertainment and Media
 potato,n,Food and Drink
 pound,n,Shopping
 practice,n,Education; Entertainment and Media; Sport
@@ -929,7 +927,7 @@ put,v,
 put on,phr v,
 quarter,n,Measurements; Time
 queen,n,Work and Jobs
-question,n,
+question,n,Education
 quick,adj,"Personal Feelings, Opinions and Experiences"
 quiet,adj,"Personal Feelings, Opinions and Experiences"
 quite,adv,
@@ -942,7 +940,7 @@ railway station,n,Places: Buildings
 rain,n & v,Weather
 raincoat,n,Clothes and Accessories
 rainforest,n,Places: Countryside
-rap,n,
+rap,n,Entertainment and Media
 rather,adv,
 read,v,Education; Entertainment and Media
 ready,adj,"Personal Feelings, Opinions and Experiences"
@@ -971,12 +969,12 @@ room,n,House and Home
 round,"adj, adv & prep",
 roundabout,n,Places: Town and City; Travel and Transport
 run,v,"Health, Medicine and Exercise; Sport"
-sad,adj,
+sad,adj,"Personal Feelings, Opinions and Experiences"
 safe,adj,House and Home
 sail,v,
 sailing,n,Sport; Travel and Transport
 salad,n,Food and Drink
-sale,n,
+sale,n,Shopping
 salt,n,Food and Drink
 same,adj & pron,
 sandwich,n,Food and Drink
@@ -985,7 +983,7 @@ save,v,
 say,v,
 school,n,Education; Places: Buildings
 Science,n,Education
-scooter,n,
+scooter,n,Travel and Transport
 screen,n,Communication and Technology; Entertainment and Media
 sea,n,Places: Countryside; Sport; The Natural World
 seat,n,Travel and Transport
@@ -994,7 +992,7 @@ secretary,n,Work and Jobs
 see,v,
 sell,v,
 send,v,
-sentence,n,
+sentence,n,Education
 September,n,Time
 several,det & adj,
 shall,v,
@@ -1004,7 +1002,7 @@ sheet,n,
 shelf,n,House and Home
 ship,n,Travel and Transport
 shirt,n,Clothes and Accessories
-shoe,n,
+shoe,n,House and Home
 shoes,n pl,Clothes and Accessories
 shop,n & v,Places: Buildings; Shopping
 shop assistant,n,Shopping; Work and Jobs
@@ -1029,7 +1027,7 @@ sister,n,Family and Friends
 sit,v,
 sit down,phr v,
 sitting room,n,House and Home
-size,n,
+size,n,Measurements
 skate,v,Sport
 skateboard,n,Sport
 ski,v,Sport
@@ -1047,7 +1045,7 @@ snowboard,n,Sport
 snowboarding,n,Sport
 so,conj & adv,
 soap,n,"Health, Medicine and Exercise"
-sock,n,
+sock,n,House and Home
 sofa,n,House and Home
 soft,adj,"Personal Feelings, Opinions and Experiences"
 some,det & pron,
@@ -1056,7 +1054,7 @@ someone,pron,
 something,pron,
 sometimes,adv,
 somewhere,adv,
-son,n,
+son,n,Family and Friends
 song,n,Entertainment and Media
 soon,adv,
 sorry,adj,"Personal Feelings, Opinions and Experiences"
@@ -1068,7 +1066,7 @@ speak,v,
 special,adj,"Personal Feelings, Opinions and Experiences"
 spell,v,
 spend,v,Shopping
-spoon,n,
+spoon,n,House and Home
 sport,n,Sport
 sports centre,n,Places: Buildings; Services; Sport
 spring,n,The Natural World; Time
@@ -1090,7 +1088,7 @@ stomach,n,"Health, Medicine and Exercise"
 stop,n & v,Travel and Transport
 store,n,Shopping
 storm,n,Weather
-story,n,
+story,n,Entertainment and Media
 straight,adj,
 straight on,adv,Travel and Transport
 strange,adj,"Personal Feelings, Opinions and Experiences"
@@ -1111,15 +1109,15 @@ sun,n,Weather
 Sunday,n,Time
 sunny,adj,Weather
 supermarket,n,Places: Buildings; Shopping
-supper,n,
+supper,n,Food and Drink
 suppose,v,
 sure,adj,"Personal Feelings, Opinions and Experiences"
 surfboard,n,Sport
 surfboarding,n,Sport
-surfing,n,
+surfing,n,Hobbies and Leisure; Sport
 surname,n,Family and Friends
 surprise,n,
-surprised,adj,
+surprised,adj,"Personal Feelings, Opinions and Experiences"
 sweater,n,Clothes and Accessories
 sweet,n & adj,"Food and Drink; Personal Feelings, Opinions and Experiences"
 swim,v,"Health, Medicine and Exercise; Sport"
@@ -1127,7 +1125,7 @@ swimming,n,Sport
 swimming costume,n,Sport
 swimming pool,n,Places: Buildings; Services
 T-shirt,n,Clothes and Accessories
-table,n,
+table,n,House and Home
 table-tennis,n,Sport
 take,v,
 take off,phr v,
@@ -1150,8 +1148,8 @@ term,n,Education
 terrible,adj,"Personal Feelings, Opinions and Experiences"
 test,n,Education
 text,n & v,Communication and Technology; Documents and Texts
-text book,n,
-text message,n,
+text book,n,Documents and Texts; Education
+text message,n,Communication and Technology; Documents and Texts
 than,prep & conj,
 thank,v,
 the,det,
@@ -1177,7 +1175,7 @@ Thursday,n,Time
 ticket,n,Documents and Texts; Entertainment and Media; Sport; Travel and Transport
 tidy,adj & v,
 tidy up,v,
-tiger,n,
+tiger,n,The Natural World
 tights,n pl,Clothes and Accessories
 till,prep,
 time,n,Time
@@ -1200,7 +1198,7 @@ tourist,n,Travel and Transport
 tourist information centre,n,Services; Travel and Transport
 towel,n,House and Home
 town,n,Places: Town and City
-toy,n,
+toy,n,Hobbies and Leisure
 traffic,n,Travel and Transport
 traffic lights,n pl,Travel and Transport
 train,n,
@@ -1223,7 +1221,7 @@ twice,adv,
 type,n,
 tyre,n,Travel and Transport
 umbrella,n,Clothes and Accessories
-uncle,n,
+uncle,n,Family and Friends
 under,prep,
 underground,n & adj,Places: Town and City; Travel and Transport
 understand,v,
@@ -1253,7 +1251,7 @@ waiter,n,Food and Drink; Work and Jobs
 waitress,n,Food and Drink; Work and Jobs
 wake up,phr v,
 walk,v,"Health, Medicine and Exercise; Sport"
-wall,n,
+wall,n,House and Home
 wallet,n,Clothes and Accessories
 want,v,
 warm,adj,Weather
@@ -1276,7 +1274,7 @@ welcome,v,
 well,adv & adj,"Health, Medicine and Exercise; Personal Feelings, Opinions and Experiences"
 west,"n, adj & adv",The Natural World
 wet,adj,Weather
-whale,n,
+whale,n,The Natural World
 what,det & pron,
 wheel,n,Travel and Transport
 when,adv,
@@ -1294,18 +1292,18 @@ will,v,
 win,v,Sport
 wind,n,Weather
 window,n,Travel and Transport
-windsurfing,n,
+windsurfing,n,Hobbies and Leisure; Sport
 windy,adj,Weather
 winner,n,Sport
 winter,n,The Natural World; Time
 wishes,n pl,
 with,prep,
 without,prep,
-woman,n,
-wonderful,adj,
+woman,n,Family and Friends
+wonderful,adj,"Personal Feelings, Opinions and Experiences"
 wood,n,Places: Countryside; The Natural World
 wool,n,The Natural World
-word,n,
+word,n,Documents and Texts
 work,n & v,Work and Jobs
 worker,n,Work and Jobs
 working hours,n,Time; Work and Jobs
@@ -1328,3 +1326,161 @@ yours,pron,
 yourself,pron,
 zero,n,
 zoo,n,Places: Town and City
+amazingly,adv,"Personal Feelings, Opinions and Experiences"
+angrily,adv,"Personal Feelings, Opinions and Experiences"
+badly,adv,"Personal Feelings, Opinions and Experiences"
+beautifully,adv,"Personal Feelings, Opinions and Experiences"
+believer,n,
+borrower,n,
+brilliantly,adv,"Personal Feelings, Opinions and Experiences"
+builder,n,
+buyer,n,Shopping
+caller,n,Communication and Technology
+camper,n,Hobbies and Leisure
+carefully,adv,"Personal Feelings, Opinions and Experiences"
+catcher,n,Sport
+cheaply,adv,Shopping
+cleanly,adv,"Health, Medicine and Exercise"
+clearly,adv,"Personal Feelings, Opinions and Experiences"
+cleverly,adv,"Education; Personal Feelings, Opinions and Experiences"
+climber,n,Sport
+comfortably,adv,
+correctly,adv,
+dangerously,adv,"Health, Medicine and Exercise"
+deadly,adv,"Health, Medicine and Exercise"
+dearly,adv,
+decider,n,
+differently,adv,"Personal Feelings, Opinions and Experiences"
+digitally,adv,Communication and Technology
+doubly,adv,
+dreamer,n,
+drinker,n,Food and Drink
+earner,n,Work and Jobs
+easily,adv,
+eater,n,Food and Drink
+electrically,adv,Appliances
+excitedly,adv,"Personal Feelings, Opinions and Experiences"
+fairly,adv,
+famously,adv,"Personal Feelings, Opinions and Experiences"
+finder,n,
+finely,adv,"Personal Feelings, Opinions and Experiences"
+firstly,adv,
+fisher,n,Food and Drink
+flyer,n,Travel and Transport
+follower,n,
+freely,adv,"Personal Feelings, Opinions and Experiences"
+freshly,adv,Food and Drink
+giver,n,
+gladly,adv,"Personal Feelings, Opinions and Experiences"
+greatly,adv,"Personal Feelings, Opinions and Experiences"
+grower,n,The Natural World
+happily,adv,"Personal Feelings, Opinions and Experiences"
+hardly,adv,"Personal Feelings, Opinions and Experiences"
+hater,n,
+heavily,adv,"Personal Feelings, Opinions and Experiences"
+helper,n,
+highly,adv,"Personal Feelings, Opinions and Experiences"
+hitter,n,
+importantly,adv,"Personal Feelings, Opinions and Experiences"
+interestingly,adv,"Personal Feelings, Opinions and Experiences"
+internationally,adv,
+keeper,n,
+kindly,adv,"Personal Feelings, Opinions and Experiences"
+largely,adv,
+lastly,adv,
+lately,adv,
+learner,n,Education
+lightly,adv,Colours; House and Home; Travel and Transport
+loser,n,
+loudly,adv,
+lowly,adv,
+luckily,adv,"Personal Feelings, Opinions and Experiences"
+maker,n,
+mostly,adv,
+mover,n,Travel and Transport
+nationally,adv,
+newly,adv,
+nicely,adv,"Personal Feelings, Opinions and Experiences"
+normally,adv,
+openly,adv,Shopping
+packer,n,
+payer,n,Shopping
+planner,n,
+pleasantly,adv,"Personal Feelings, Opinions and Experiences"
+poorly,adv,"Personal Feelings, Opinions and Experiences"
+popularly,adv,
+possibly,adv,
+quickly,adv,"Personal Feelings, Opinions and Experiences"
+quietly,adv,"Personal Feelings, Opinions and Experiences"
+racer,n,Sport
+reader,n,Education; Entertainment and Media
+readily,adv,"Personal Feelings, Opinions and Experiences"
+renter,n,Shopping
+richly,adv,"Personal Feelings, Opinions and Experiences"
+rider,n,Sport; Travel and Transport
+rightly,adv,"Personal Feelings, Opinions and Experiences; Travel and Transport"
+runner,n,"Health, Medicine and Exercise; Sport"
+sadly,adv,"Personal Feelings, Opinions and Experiences"
+safely,adv,House and Home
+saver,n,
+secondly,adv,Measurements; Time
+seller,n,
+sender,n,
+shortly,adv,
+sickly,adv,"Health, Medicine and Exercise"
+skater,n,Sport
+skier,n,Sport
+sleeper,n,
+slowly,adv,"Personal Feelings, Opinions and Experiences"
+smoker,n,
+softly,adv,"Personal Feelings, Opinions and Experiences"
+speaker,n,
+specially,adv,"Personal Feelings, Opinions and Experiences"
+spender,n,Shopping
+squarely,adv,Places: Town and City
+strangely,adv,"Personal Feelings, Opinions and Experiences"
+strongly,adv,"Personal Feelings, Opinions and Experiences"
+surely,adv,"Personal Feelings, Opinions and Experiences"
+sweetly,adv,"Food and Drink; Personal Feelings, Opinions and Experiences"
+swimmer,n,"Health, Medicine and Exercise; Sport"
+talker,n,Communication and Technology
+terribly,adv,"Personal Feelings, Opinions and Experiences"
+thinker,n,
+thinly,adv,
+thrower,n,Sport
+totally,adv,
+traveller,n,Travel and Transport
+unable,adj,"Personal Feelings, Opinions and Experiences"
+unborn,adj,
+uncertain,adj,"Personal Feelings, Opinions and Experiences"
+unclean,adj,"Health, Medicine and Exercise"
+unclear,adj,"Personal Feelings, Opinions and Experiences"
+uncomfortable,adj,
+undead,adj,"Health, Medicine and Exercise"
+uneasy,adj,
+uneven,adv,
+unfair,adj,
+unfit,adj,"Health, Medicine and Exercise"
+unfriendly,adj,"Family and Friends; Personal Feelings, Opinions and Experiences"
+unhealthy,adj,"Health, Medicine and Exercise"
+unimportant,adj,"Personal Feelings, Opinions and Experiences"
+uninterested,adj,"Personal Feelings, Opinions and Experiences"
+unjust,adv,
+unlike,adv,
+unlucky,adj,"Personal Feelings, Opinions and Experiences"
+unmarried,adj,"Family and Friends; Personal Feelings, Opinions and Experiences"
+unpleasant,adj,"Personal Feelings, Opinions and Experiences"
+unpopular,adj,
+unreal,adj,"Personal Feelings, Opinions and Experiences"
+unsafe,adj,House and Home
+unsure,adj,"Personal Feelings, Opinions and Experiences"
+unusual,adj,
+unwell,adv,"Health, Medicine and Exercise; Personal Feelings, Opinions and Experiences"
+user,n,
+usually,adv,
+walker,n,"Health, Medicine and Exercise; Sport"
+warmly,adv,Weather
+wearer,n,Clothes and Accessories
+wildly,adv,
+wonderfully,adv,"Personal Feelings, Opinions and Experiences"
+wrongly,adv,"Personal Feelings, Opinions and Experiences"
