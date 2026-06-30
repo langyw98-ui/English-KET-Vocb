@@ -1,0 +1,22 @@
+{
+  "vocab_refill": {
+    "low_watermark": 5,
+    "high_watermark": 10,
+    "interval_turns": 5
+  },
+  "sentence": {
+    "min_words": 5,
+    "max_words": 12
+  },
+  "variety": {
+    "recent_window": 3
+  },
+  "summary": {
+    "interval_turns": 15
+  },
+  "validate_retry_limit": 2,
+  "struggling_threshold": {
+    "wrong_count_min": 2,
+    "exposed_count_min": 4
+  }
+}
