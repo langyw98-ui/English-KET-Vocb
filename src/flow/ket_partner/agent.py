@@ -81,6 +81,7 @@ class KETPartnerAgent:
             target=state["last_target_word"],
             kid_input=kid_input,
         )
+        logger.debug(f"evaluate_translation_node: {result}")
         # Filter to last_sentence_words subset. This is the safety net for:
         # 1. Non-KET words — when generate_sentence_node exhausts retries and
         #    accepts a draft with non_ket_words, those words appear in the
@@ -89,17 +90,28 @@ class KETPartnerAgent:
         # 2. LLM using wrong case / inflected forms — canonical lookup maps
         #    "Eat" → "eat" so it matches the canonical form in last_words.
         # 3. LLM inventing words not in the sentence — silently dropped.
+        # 4. LLM emitting the same word twice (observed in production: the
+        #    LLM flagged `snow` with two contradictory meanings). Dedup by
+        #    word — first entry wins.
         last_words_set = set(state.get("last_sentence_words") or [])
+        seen_words: set[str] = set()
         filtered = []
         for entry in result.wrong_words:
             if entry.word in last_words_set:
-                filtered.append(entry)
-                continue
-            canonical = await self.repos.vocab.get_ket_word(entry.word)
-            if canonical and canonical in last_words_set:
-                filtered.append(entry.model_copy(update={"word": canonical}))
+                key = entry.word
             else:
-                logger.debug(f"evaluate_translation_node: dropping non-KET word '{entry.word}'")
+                canonical = await self.repos.vocab.get_ket_word(entry.word)
+                if canonical and canonical in last_words_set:
+                    entry = entry.model_copy(update={"word": canonical})
+                    key = canonical
+                else:
+                    logger.debug(f"evaluate_translation_node: dropping non-KET word '{entry.word}'")
+                    continue
+            if key in seen_words:
+                logger.debug(f"evaluate_translation_node: dropping duplicate wrong_word '{key}'")
+                continue
+            seen_words.add(key)
+            filtered.append(entry)
         return {
             "wrong_words": [e.model_dump() for e in filtered],
             "sentence_translation": result.correct_translation,

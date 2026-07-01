@@ -477,6 +477,43 @@ async def test_wrong_word_rendered_and_deducted(setup):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_node_dedupes_duplicate_wrong_words(setup):
+    """Regression: the LLM emitted two entries for the same word with
+    contradictory meanings. Without dedup the UI rendered back-to-back
+    duplicate lines. Dedup by word in evaluate_translation_node so each
+    word appears at most once — first entry wins.
+    """
+    from flow.ket_partner.translation_evaluator import WrongWord
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="猫在盒子里",
+            wrong_words=[
+                WrongWord(word="in", kid_translation="上", correct_translation="里"),
+                WrongWord(word="in", kid_translation="上", correct_translation="内部"),
+            ],
+        ),
+        sentence_text="The cat is in the box.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "dup"}},
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="猫在盒子上")]},
+        config={"configurable": {"thread_id": "dup"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # `in 的意思是：` must appear exactly once, not twice.
+    assert ai_msg.count("in 的意思是：") == 1, (
+        "duplicate wrong_words entries for the same word must be deduped"
+    )
+
+
+@pytest.mark.asyncio
 async def test_evaluate_node_drops_non_ket_words(setup):
     """Regression: when generate_sentence_node exhausts retries and accepts
     a draft with non_ket_words, the displayed sentence contains non-KET
