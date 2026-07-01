@@ -149,25 +149,30 @@ class KETPartnerAgent:
         # whatever was re-hydrated by init_state from the DB log.
         sentence = state.get("last_english_sentence") or ""
         text = format_output_text(state, sentence)
+        # SPREAD existing messages into the return so the REPLACE reducer on
+        # `messages` (no reducer annotation in BTPKetState) preserves the
+        # caller's HumanMessage(s). Otherwise persist_turn_node only sees the
+        # single AIMessage and messages[-2] is out of range — the user input
+        # for this turn is then never written to conversation_log.
         return {
-            "messages": [AIMessage(content=text)],
+            "messages": [*state["messages"], AIMessage(content=text)],
         }
 
     async def explain_meaning_node(self, state: BTPKetState) -> dict:
         asked = state["asked_word"]
         meaning = state.get("asked_word_meaning", "")
         text = f'💡 "{asked}" 的意思是「{meaning}」。\n(继续翻译上句吧)'
-        return {"messages": [AIMessage(content=text)]}
+        return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def redirect_to_translate_node(self, state: BTPKetState) -> dict:
         last = state.get("last_english_sentence") or ""
         text = f"我们继续翻译练习吧。\n🔤 上一句:{last}"
-        return {"messages": [AIMessage(content=text)]}
+        return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def compliance_redirect_node(self, state: BTPKetState) -> dict:
         last = state.get("last_english_sentence") or ""
         text = f"我们换个健康的话题继续练习吧。\n🔤 上一句:{last}"
-        return {"messages": [AIMessage(content=text)]}
+        return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def persist_turn_node(self, state: BTPKetState) -> dict:
         user_msg = state["messages"][-2] if len(state["messages"]) >= 2 else None

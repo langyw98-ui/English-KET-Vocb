@@ -271,6 +271,17 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
         "(confirms turn 2 completed the full evaluate→generate cycle, not re-selected)"
     )
 
+    # Verify both turns' user inputs were logged to conversation_log.
+    # (Latent bug: with REPLACE reducer and AI-only return dicts, messages[-2]
+    # in persist_turn_node saw no HumanMessage, so user inputs were never logged.)
+    async with setup.log._db.execute(
+        "SELECT role, content FROM conversation_log WHERE role = 'user' ORDER BY id"
+    ) as cur:
+        user_rows = await cur.fetchall()
+    user_contents = {r[1] for r in user_rows}
+    assert "hi" in user_contents, "turn-1 user input must be logged"
+    assert "猫在床上" in user_contents, "turn-2 user input must be logged"
+
 
 @pytest.mark.asyncio
 async def test_asks_meaning_does_not_re_expose_words(setup):
