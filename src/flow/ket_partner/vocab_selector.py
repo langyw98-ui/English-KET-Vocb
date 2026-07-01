@@ -29,7 +29,8 @@ async def select_target_word(
     in_refill = _compute_refill_mode(learning_count, profile["in_refill_mode"], low, high)
 
     turn = profile["total_turns"]
-    if in_refill and (turn - profile["last_new_word_turn"]) >= interval:
+    cold_start = learning_count == 0
+    if in_refill and (cold_start or (turn - profile["last_new_word_turn"]) >= interval):
         target = await _pick_new_word(repos, profile)
         if target is not None:
             await repos.profile.update(
