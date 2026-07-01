@@ -1,6 +1,3 @@
-from typing import Optional
-
-from flow.common import logger
 from flow.ket_partner.config import load_config
 from flow.ket_partner.db import init_db
 from flow.ket_partner.exporter import export_learning_report

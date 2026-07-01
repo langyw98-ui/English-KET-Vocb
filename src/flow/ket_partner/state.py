@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Dict, List, Optional, TypedDict
 
 from langchain.messages import AnyMessage
 
@@ -18,3 +18,8 @@ class BTPKetState(TypedDict):
     profile_strategy: Optional[str]
     profile_weakness: Optional[str]
     last_english_sentence: Optional[str]
+    # Flag set by generate_sentence_node after it has incremented
+    # exposed_count for the NEW sentence's words. persist_turn_node reads
+    # this so non-generate turns (asks_meaning/idk/off_topic/non_compliant)
+    # do NOT re-increment exposure for the prior sentence's words.
+    _exposure_recorded: Optional[bool]

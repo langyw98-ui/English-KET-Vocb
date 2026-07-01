@@ -56,6 +56,15 @@ async def main():
             print(f"AI: {ai_reply}\n")
             turn_id += 1
     finally:
+        # Drain any in-flight background summary task before the loop closes.
+        # Without this, a task scheduled on the turn that triggered /exit is
+        # silently dropped (I3).
+        agent_instance = getattr(agent, "agent", None)
+        if agent_instance is not None:
+            try:
+                await agent_instance.aclose()
+            except Exception as e:
+                logger.warning(f"agent.aclose() failed during shutdown: {e}")
         chat_logger.close_session()
 
 

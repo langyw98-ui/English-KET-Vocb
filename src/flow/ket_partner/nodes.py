@@ -1,4 +1,3 @@
-from flow.common import logger
 from flow.ket_partner.db import Repos
 
 

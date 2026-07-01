@@ -1,8 +1,7 @@
 import asyncio
-import random
 from typing import Optional
 
-from langchain.messages import AIMessage, HumanMessage, SystemMessage
+from langchain.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -42,14 +41,22 @@ class KETPartnerAgent:
             "last_english_sentence": None,
             "last_target_word": None,
             "last_sentence_words": [],
+            # Reset each turn — generate_sentence_node sets this True.
+            "_exposure_recorded": False,
         }
-        if len(state["messages"]) <= 1:
-            history = await self.repos.log.recent(limit=5)
-            last_ai = await self.repos.log.last_ai_message()
-            if last_ai:
-                update["last_english_sentence"] = last_ai["content"]
-                update["last_sentence_words"] = last_ai["words_used"]
-                update["last_target_word"] = last_ai["target_words"][0] if last_ai["target_words"] else None
+        # The DB is the single source of truth (spec §11.1). Always re-hydrate
+        # from the last AI log row regardless of how many messages were passed
+        # in. The previous `len(state["messages"]) <= 1` guard broke under
+        # main.py's `messages[-5:]` windowing: on turn 2 the caller passes
+        # [Human1, AI1, Human2] (length 3), the guard failed, and the three
+        # keys stayed None/[] — causing route_after_init to re-select a target
+        # word (infinite first-turn loop) and evaluate_translation to run
+        # against an empty sentence (mastery never incremented).
+        last_ai = await self.repos.log.last_ai_message()
+        if last_ai:
+            update["last_english_sentence"] = last_ai["content"]
+            update["last_sentence_words"] = last_ai["words_used"]
+            update["last_target_word"] = last_ai["target_words"][0] if last_ai["target_words"] else None
         return update
 
     async def classify_intent_node(self, state: BTPKetState) -> dict:
@@ -99,6 +106,7 @@ class KETPartnerAgent:
             min_words=self.config.sentence.min_words,
             max_words=self.config.sentence.max_words,
         )
+        result = None
         for _ in range(self.config.validate_retry_limit):
             result = await validate_sentence(sentence, self.repos)
             if result.ok:
@@ -113,17 +121,36 @@ class KETPartnerAgent:
             )
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
-        result = await validate_sentence(sentence, self.repos)
+        # Reuse the last validation result instead of calling validate_sentence
+        # a second time (was a redundant extra call).
+        if result is None:
+            result = await validate_sentence(sentence, self.repos)
         self._recent_scaffolding.extend(result.words_used)
-        return {"last_sentence_words": result.words_used, "_pending_sentence": sentence}
+        # Per spec §11.9, exposed_count is incremented once per word in the
+        # NEW sentence. Do this here (on the generate path) so non-generate
+        # turns do not re-count the prior sentence's words. Set the flag so
+        # persist_turn_node knows the increment is already done and skips its
+        # own increment.
+        for w in result.words_used:
+            await self.repos.stats.increment_exposed(w)
+        # Fold the pending sentence directly into last_english_sentence
+        # (declared in BTPKetState). The previous `_pending_sentence` hand-off
+        # was undeclared and silently dropped by LangGraph, so the kid was
+        # shown an empty sentence to translate.
+        return {
+            "last_sentence_words": result.words_used,
+            "last_english_sentence": sentence,
+            "_exposure_recorded": True,
+        }
 
     async def format_output_node(self, state: BTPKetState) -> dict:
-        sentence = state.get("_pending_sentence") or ""
+        # Read the sentence from last_english_sentence (set by
+        # generate_sentence_node). For non-generate branches the value is
+        # whatever was re-hydrated by init_state from the DB log.
+        sentence = state.get("last_english_sentence") or ""
         text = format_output_text(state, sentence)
         return {
             "messages": [AIMessage(content=text)],
-            "_pending_sentence": None,
-            "last_english_sentence": sentence,
         }
 
     async def explain_meaning_node(self, state: BTPKetState) -> dict:
@@ -151,15 +178,24 @@ class KETPartnerAgent:
         if user_msg and isinstance(user_msg, HumanMessage):
             await self.repos.log.append("user", user_msg.content, words_used=[], turn_id=turn_id)
         if ai_msg and isinstance(ai_msg, AIMessage):
+            # Only the generate path produces a sentence whose words count as
+            # "actual_words_used" (spec §11.9). When _exposure_recorded is True,
+            # generate_sentence_node has ALREADY incremented exposed_count and
+            # we log the words on the AI row. For all other branches
+            # (asks_meaning / idk / off_topic / non_compliant / redirect) the
+            # AI message is not a fresh sentence, so words_used=[] and no
+            # increment happens here.
+            exposure_recorded = bool(state.get("_exposure_recorded"))
+            words_for_log = state.get("last_sentence_words") or [] if exposure_recorded else []
             await self.repos.log.append(
                 "ai",
                 ai_msg.content,
-                words_used=state.get("last_sentence_words") or [],
+                words_used=words_for_log,
                 target_words=[state["target_word"]] if state.get("target_word") else [],
                 turn_id=turn_id,
             )
-            for w in (state.get("last_sentence_words") or []):
-                await self.repos.stats.increment_exposed(w)
+            # Increment has already happened in generate_sentence_node; do
+            # NOT re-increment here.
 
         await self.repos.profile.update(total_turns=turn_id)
 
@@ -174,6 +210,28 @@ class KETPartnerAgent:
             await run_profile_summary(self.llm_smart, self.repos)
         except Exception as e:
             logger.warning(f"background summary failed: {e}")
+
+    async def aclose(self, timeout: float = 2.0) -> None:
+        """Drain in-flight background summary tasks.
+
+        Without this, a summary task scheduled on the turn that triggers
+        /exit would be silently dropped when the event loop closes. We give
+        it a small window (default 2s) and swallow exceptions (the summary
+        is best-effort by design — see _run_summary_safe).
+        """
+        if not self._bg_tasks:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*self._bg_tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"aclose: {len(self._bg_tasks)} background task(s) did not finish within {timeout}s; cancelling"
+            )
+            for t in self._bg_tasks:
+                t.cancel()
 
     async def compile(self, builder: StateGraph, checkpointer) -> CompiledStateGraph:
         builder.add_node("init_state", self.init_state)
@@ -253,12 +311,31 @@ class KETPartnerAgent:
 
 
 async def build_agent(llm_flash, llm_smart, repos: Repos, info: dict) -> CompiledStateGraph:
+    """Build the compiled graph.
+
+    The underlying KETPartnerAgent is attached to the returned graph object
+    as `.agent` so callers (e.g. main.py) can drain background tasks on
+    shutdown via `await graph.agent.aclose()`. Attaching it as an attribute
+    avoids changing the function's return signature, which would break the
+    10+ test callsites that do `agent = await build_agent(...)` then
+    `agent.ainvoke(...)`.
+    """
     cfg = load_config()
     agent = KETPartnerAgent(llm_flash, llm_smart, repos, info, cfg)
     builder = StateGraph(BTPKetState)
-    return await agent.compile(builder, checkpointer=memory)
+    graph = await agent.compile(builder, checkpointer=memory)
+    # Attach the agent instance so main.py's finally block can drain
+    # background tasks. (CompiledStateGraph is a Runnable; extra attributes
+    # are tolerated by LangGraph.)
+    graph.agent = agent  # type: ignore[attr-defined]
+    return graph
 
 
 async def autonomous(info: dict, db_path: str = "ket_partner.db", csv_path: Optional[str] = None) -> CompiledStateGraph:
+    """Build the agent for the REPL entrypoint.
+
+    The returned graph has `.agent` attached — main.py uses it to call
+    `aclose()` on shutdown.
+    """
     repos = await init_db(db_path, csv_path=csv_path)
     return await build_agent(llm_flash, llm_plus, repos, info)
