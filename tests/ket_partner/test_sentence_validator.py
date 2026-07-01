@@ -35,6 +35,10 @@ async def repos(temp_db_path):
         "story,n,Reading\n"
         "try,v,Action\n"
         "large,adj,Size\n"
+        "make,v,Action\n"
+        "rain,n,Weather\n"
+        "grass,n,Nature\n"
+        "wet,adj,\n"
     )
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
@@ -127,6 +131,17 @@ async def test_validate_handles_comparatives_and_superlatives(repos):
     r5 = await validate_sentence("The biggest dog walked.", repos)
     assert r5.ok is True
     assert "big" in r5.words_used
+
+
+@pytest.mark.asyncio
+async def test_validate_verb_s_form_after_e_verb(repos):
+    """Regression: "makes" ends in "es" so the -es plural rule stripped both
+    letters giving "mak" (not a word). The -s branch was unreachable due to
+    `elif`, so "makes" was misclassified as non-KET even though "make" is in
+    the vocab. Same shape applies to likes/bakes/hopes/etc."""
+    r = await validate_sentence("The rain makes the grass wet.", repos)
+    assert r.ok is True, f"makes should reduce to make; got non_ket={r.non_ket_words}"
+    assert "make" in r.words_used
 
 
 @pytest.mark.asyncio

@@ -124,6 +124,25 @@ def test_format_output_translation_with_wrong():
     assert "The dog runs." in text
 
 
+def test_format_output_translation_with_omitted_word():
+    """Regression: when the kid OMITS a word entirely (kid_translation is
+    empty), the wrong_words entry must still be rendered. Otherwise
+    "你的翻译有误:" shows with no items below it — confusing."""
+    state = {
+        "intent": "translation",
+        "sentence_translation": "那只有趣的猫在我的床上休息",
+        "wrong_words": [{
+            "word": "my",
+            "kid_translation": "",  # kid omitted it
+            "correct_translation": "我的",
+        }],
+        "last_target_word": "cat",
+    }
+    text = format_output_text(state, new_sentence="The bird sings.")
+    assert "你的翻译有误:" in text
+    assert "my 的意思是：我的" in text, "omitted word must still be rendered"
+
+
 def test_format_output_idk():
     state = {
         "intent": "idk",

@@ -44,13 +44,18 @@ def _candidate_roots(token: str) -> list:
     candidates = [lower]
     if lower in _LEMMAS:
         candidates.append(_LEMMAS[lower])
-    # Plurals
+    # Plurals / 3rd-person singular. Try BOTH "-es" and "-s" stems: a word
+    # like "makes" ends in "es" but its lemma is "make" (verb+s), not "mak".
+    # The -es branch handles true -es plurals (watches→watch, boxes→box);
+    # the -s branch catches the verb+s case (makes→make, likes→like).
+    # get_ket_word tries candidates in order, so an incorrect "mak" candidate
+    # is harmless as long as "make" is also in the list.
     if lower.endswith("ies") and len(lower) > 4:
         candidates.append(lower[:-3] + "y")   # stories → story
-    elif lower.endswith("es") and len(lower) > 3:
+    if lower.endswith("es") and len(lower) > 3:
         candidates.append(lower[:-2])         # watches → watch, boxes → box
-    elif lower.endswith("s") and len(lower) > 2:
-        candidates.append(lower[:-1])         # cats → cat, wears → wear
+    if lower.endswith("s") and len(lower) > 2:
+        candidates.append(lower[:-1])         # cats → cat, makes → make
     # Past tense (-ed)
     if lower.endswith("ied") and len(lower) > 4:
         candidates.append(lower[:-3] + "y")   # tried → try

@@ -42,9 +42,10 @@ def format_output_text(state: dict, new_sentence: str) -> str:
             for entry in wrong:
                 word = entry.get("word", "?")
                 correct = entry.get("correct_translation", "?")
-                kid = entry.get("kid_translation", "")
-                if kid:
-                    lines.append(f" {word} 的意思是：{correct}")
+                # kid_translation may be empty when the kid OMITTED the word
+                # entirely — that's still a real error and must be surfaced,
+                # otherwise "你的翻译有误:" renders with no items below it.
+                lines.append(f" {word} 的意思是：{correct}")
     elif intent == "idk":
         sentence_t = state.get("sentence_translation", "")
         if sentence_t:
