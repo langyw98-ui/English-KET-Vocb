@@ -99,3 +99,64 @@ async def test_rewrite_sentence_falls_back_to_original_on_error():
         max_words=12,
     )
     assert result == original
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_lists_avoid_sentences():
+    """The system prompt must surface prior sentences verbatim so the LLM
+    knows what NOT to output. Without this, sentence-level dedup is blind."""
+    llm = _make_llm("A fresh new sentence.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        avoid_sentences=["The cat runs.", "The cat jumps."],
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "The cat runs." in system_text
+    assert "The cat jumps." in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_shows_none_yet_when_empty():
+    """Empty avoid list must render gracefully (no formatting artifacts)."""
+    llm = _make_llm("A fresh new sentence.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        avoid_sentences=[],
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "(none yet)" in system_text
+
+
+@pytest.mark.asyncio
+async def test_rewrite_sentence_prompt_lists_avoid_sentences():
+    """Rewrite path must also receive prior sentences so it doesn't grind
+    the sentence back to a previously-used one."""
+    llm = _make_llm("A fresh new sentence.")
+    await rewrite_sentence(
+        llm,
+        original="The cat sleeps.",
+        replace_words=["sleeps"],
+        target="cat",
+        age=8,
+        min_words=5,
+        max_words=12,
+        avoid_sentences=["The cat rests."],
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "The cat rests." in system_text

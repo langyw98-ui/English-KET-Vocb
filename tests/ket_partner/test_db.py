@@ -83,3 +83,61 @@ async def test_status_transitions(temp_db_path):
     await repos.stats.apply_delta("cat", delta=-1)
     assert (await repos.stats.get("cat"))["status"] == "learning"
     assert (await repos.stats.get("cat"))["mastery_score"] == 2
+
+
+@pytest.mark.asyncio
+async def test_last_ai_message_returns_none_when_no_ai_rows(temp_db_path):
+    repos = await init_db(temp_db_path, csv_path=None)
+    assert await repos.log.last_ai_message() is None
+
+
+@pytest.mark.asyncio
+async def test_last_ai_message_returns_latest_when_no_session_start(temp_db_path):
+    """Backward compat: databases populated before session_start was added
+    must still return the latest AI row when no marker exists."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.log.append("ai", "old sentence", words_used=["old"], turn_id=1)
+    await repos.log.append("ai", "newer sentence", words_used=["new"], turn_id=2)
+    result = await repos.log.last_ai_message()
+    assert result is not None
+    assert result["content"] == "newer sentence"
+
+
+@pytest.mark.asyncio
+async def test_last_ai_message_ignores_rows_before_session_start(temp_db_path):
+    """Regression: a kid who exits mid-sentence must NOT see that sentence
+    restored on restart. append_session_start marks the boundary; all AI
+    rows before it become invisible to last_ai_message."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    # Prior session left an unfinished sentence.
+    await repos.log.append("ai", "The unfinished sentence.", words_used=["x"], turn_id=1)
+    # REPL restart writes the session_start marker.
+    await repos.log.append_session_start()
+    # No new AI rows yet in this session.
+    assert await repos.log.last_ai_message() is None
+
+
+@pytest.mark.asyncio
+async def test_last_ai_message_returns_only_post_marker_row(temp_db_path):
+    """After session_start, new AI rows are visible; pre-marker ones stay hidden."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.log.append("ai", "stale from prev session", words_used=["x"], turn_id=1)
+    await repos.log.append_session_start()
+    await repos.log.append("ai", "fresh this session", words_used=["y"], turn_id=2)
+    result = await repos.log.last_ai_message()
+    assert result is not None
+    assert result["content"] == "fresh this session"
+    assert result["words_used"] == ["y"]
+
+
+@pytest.mark.asyncio
+async def test_append_session_start_writes_system_row(temp_db_path):
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.log.append_session_start()
+    async with repos.log._db.execute(
+        "SELECT role, content FROM conversation_log ORDER BY id DESC LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row[0] == "system"
+    assert row[1] == "session_start"

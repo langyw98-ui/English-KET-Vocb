@@ -9,16 +9,18 @@ from flow.ket_partner.agent import build_agent
 from flow.ket_partner.db import init_db
 from flow.ket_partner.input_classifier import IntentClassification
 from flow.ket_partner.translation_evaluator import TranslationEval
-from flow.ket_partner.word_meaning_lookup import WordMeaning
+from flow.ket_partner.word_meaning_lookup import SentenceTranslation, WordMeaning
 
 
-def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_text="The cat is on the bed."):
+def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translation_resp=None, sentence_text="The cat is on the bed."):
     llm = MagicMock()
     responses = {IntentClassification: intent_resp}
     if eval_resp:
         responses[TranslationEval] = eval_resp
     if meaning_resp:
         responses[WordMeaning] = meaning_resp
+    if sentence_translation_resp:
+        responses[SentenceTranslation] = sentence_translation_resp
 
     def structured(schema, **kwargs):
         bound = MagicMock()
@@ -34,7 +36,7 @@ def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_text="The
 
 @pytest.fixture
 async def setup(temp_db_path):
-    csv_text = "word,part_of_speech,topic\ncat,n,Animals\ndog,n,Animals\nbed,n,Home\nthe,det,\non,prep,\nis,v,\n"
+    csv_text = "word,part_of_speech,topic\ncat,n,Animals\ndog,n,Animals\nbed,n,Home\nthe,det,\non,prep,\nin,prep,\nbox,n,\nis,v,\n"
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
@@ -63,7 +65,7 @@ async def test_first_turn_generates_sentence(setup):
 async def test_correct_translation_increments_mastery(setup):
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
-        eval_resp=TranslationEval(wrong_words=[], correct_meanings={}),
+        eval_resp=TranslationEval(correct_translation="猫在床上", wrong_words=[]),
         sentence_text="The cat is on the bed.",
     )
     agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
@@ -82,9 +84,13 @@ async def test_correct_translation_increments_mastery(setup):
 
 @pytest.mark.asyncio
 async def test_wrong_translation_deducts(setup):
+    from flow.ket_partner.translation_evaluator import WrongWord
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
-        eval_resp=TranslationEval(wrong_words=["cat"], correct_meanings={"cat": "猫"}),
+        eval_resp=TranslationEval(
+            correct_translation="猫在床上",
+            wrong_words=[WrongWord(word="cat", kid_translation="狗", correct_translation="猫")],
+        ),
         sentence_text="The cat is on the bed.",
     )
     agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
@@ -104,7 +110,7 @@ async def test_wrong_translation_deducts(setup):
 async def test_idk_deducts_target_only(setup):
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="idk", asked_word=None),
-        meaning_resp=WordMeaning(meaning="猫"),
+        sentence_translation_resp=SentenceTranslation(translation="猫在床上"),
         sentence_text="The cat is on the bed.",
     )
     agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
@@ -173,6 +179,7 @@ def _mock_llm_seq(
     intent_resp,
     eval_resp=None,
     meaning_resp=None,
+    sentence_translation_resp=None,
     sentence_texts=("The cat is on the bed.",),
 ):
     """Like _mock_llm but cycles through `sentence_texts` on successive
@@ -183,6 +190,8 @@ def _mock_llm_seq(
         responses[TranslationEval] = eval_resp
     if meaning_resp:
         responses[WordMeaning] = meaning_resp
+    if sentence_translation_resp:
+        responses[SentenceTranslation] = sentence_translation_resp
 
     def structured(schema, **kwargs):
         bound = MagicMock()
@@ -219,7 +228,7 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
     """
     llm = _mock_llm_seq(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
-        eval_resp=TranslationEval(wrong_words=[], correct_meanings={}),
+        eval_resp=TranslationEval(correct_translation="猫在床上", wrong_words=[]),
         sentence_texts=("The cat is on the bed.", "The dog is on the bed."),
     )
     agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
@@ -413,29 +422,22 @@ async def test_agent_aclose_no_tasks_is_noop(setup):
 
 
 @pytest.mark.asyncio
-async def test_function_word_error_renders_contrast(setup):
-    """Option C: when the kid mistranslates a preposition (e.g. "in" → 上),
-    the AI message must surface a contrast block so the kid learns the
-    difference between confusable prepositions.
-
-    Function words are filtered out of vocab_stats tracking by design
-    (sentence_validator), so this feedback is real-time only — it does
-    not persist into mastery_score / exposed_count.
+async def test_wrong_word_rendered_and_deducted(setup):
+    """When the kid mistranslates a word (e.g. preposition "in" → 上), the
+    unified wrong_words entry must render the correct translation AND the
+    word must be deducted from mastery (post schema-merge: function words
+    now affect mastery — that was the bug motivating the merge).
     """
-    from flow.ket_partner.translation_evaluator import FunctionWordError
+    from flow.ket_partner.translation_evaluator import WrongWord
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         eval_resp=TranslationEval(
-            wrong_words=[],
-            correct_meanings={},
-            function_word_errors=[
-                FunctionWordError(
-                    word="in",
-                    kid_translation="上",
-                    correct_translation="里",
-                    contrast="in = 里（在……中）, on = 上（在……上面）",
-                ),
-            ],
+            correct_translation="猫在盒子里",
+            wrong_words=[WrongWord(
+                word="in",
+                kid_translation="上",
+                correct_translation="里",
+            )],
         ),
         sentence_text="The cat is in the box.",
     )
@@ -451,12 +453,59 @@ async def test_function_word_error_renders_contrast(setup):
     )
     ai_msg = result["messages"][-1].content
 
-    # The warning block must appear with the contrast explanation.
-    assert "注意介词" in ai_msg, "function_word_errors must produce a warning block"
+    # The full correct translation must be shown first.
+    assert "正确翻译：猫在盒子里" in ai_msg, "correct_translation must be rendered before the wrong-word list"
+    # Then the wrong-word section with per-word correction.
+    assert "你的翻译有误:" in ai_msg, "wrong_words must render under 你的翻译有误:"
     assert "in" in ai_msg
     assert "里" in ai_msg
-    assert "上" in ai_msg
-    assert "in = 里" in ai_msg or "in=里" in ai_msg, "contrast string must be rendered"
+
+    # After the merge, prepositions in wrong_words DO affect mastery.
+    in_stats = await setup.stats.get("in")
+    assert in_stats is not None, "in must be tracked in vocab_stats"
+    assert in_stats["wrong_count"] == 1, "in's wrong_count must increment (post-merge)"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_node_drops_non_ket_words(setup):
+    """Regression: when generate_sentence_node exhausts retries and accepts
+    a draft with non_ket_words, the displayed sentence contains non-KET
+    words. If the LLM (correctly or incorrectly) flags one of those as
+    wrong, evaluate_translation_node must drop it before it reaches
+    vocab_stats — otherwise apply_delta creates a phantom stats row for
+    a word that isn't in KET vocabulary.
+    """
+    from flow.ket_partner.translation_evaluator import WrongWord
+    # LLM flags both a KET word (in) and a non-KET word (xyzzy).
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="猫在盒子里",
+            wrong_words=[
+                WrongWord(word="in", kid_translation="上", correct_translation="里"),
+                WrongWord(word="xyzzy", kid_translation="?", correct_translation="?"),
+            ],
+        ),
+        sentence_text="The cat is in the box.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "nonket-1"}},
+    )
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="猫在盒子")]},
+        config={"configurable": {"thread_id": "nonket-1"}},
+    )
+
+    # The KET wrong word must be tracked normally.
+    in_stats = await setup.stats.get("in")
+    assert in_stats is not None and in_stats["wrong_count"] == 1
+
+    # The non-KET word must NOT have a stats row.
+    xyzzy_stats = await setup.stats.get("xyzzy")
+    assert xyzzy_stats is None, "non-KET words must be filtered out before DB write"
 
 
 @pytest.mark.asyncio
@@ -612,3 +661,144 @@ async def test_generate_node_falls_back_to_regen_when_many_non_ket(setup, monkey
     # With 4 non-ket words (> threshold=2), every retry must be a full regen.
     assert call_log["rewrite"] == 0, "rewrite must NOT be called when non_ket count > threshold"
     assert call_log["generate"] >= 2, "generate_sentence must be called for each retry"
+
+
+@pytest.mark.asyncio
+async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch):
+    """Regression: 'The cat likes to dance in the rain.' appeared 3 times
+    in a row during manual testing. The retry loop must detect an exact
+    match against recent sentences and force a full regen (not rewrite,
+    which tends to preserve scaffold and re-converge on the duplicate)."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    call_log = {"generate": 0, "rewrite": 0}
+    # First call (initial draft) returns the duplicate; second call (regen
+    # after detection) returns a fresh sentence.
+    generate_seq = iter(["The cat likes to dance.", "The dog likes to swim."])
+
+    async def fake_generate(*a, **kw):
+        call_log["generate"] += 1
+        return next(generate_seq)
+
+    async def fake_rewrite(*a, **kw):
+        call_log["rewrite"] += 1
+        return "should not be called for duplicates"
+
+    async def fake_validate(sentence, repos):
+        # Always passes KET validation — duplicate is the ONLY reason to retry.
+        return ValidationResult(ok=True, words_used=["the", "cat", "likes"], non_ket_words=[])
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "rewrite_sentence", fake_rewrite)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    # Seed recent_sentences with the duplicate so the first draft collides.
+    graph.agent._recent_sentences.append("The cat likes to dance.")
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "dedup"}},
+    )
+    ai_msg = result["messages"][-1].content
+    # The kid must see the fresh sentence, not the duplicate.
+    assert "dog" in ai_msg, "duplicate must trigger regen; kid must see the fresh sentence"
+    assert "The cat likes to dance." not in ai_msg
+    # Rewrite must not be used for duplicates — it preserves scaffold.
+    assert call_log["rewrite"] == 0, "rewrite must NOT be called for duplicates (would re-converge)"
+    assert call_log["generate"] == 2, "initial draft + one regen after duplicate detection"
+
+
+@pytest.mark.asyncio
+async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypatch):
+    """The `recent_scaffolding` argument passed to generate_sentence must
+    reflect the last N SENTENCES' worth of words (flattened), not just the
+    last N words of one sentence (the pre-fix bug)."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    captured_args = {}
+
+    async def fake_generate(*a, **kw):
+        captured_args["recent_scaffolding"] = kw.get("recent_scaffolding")
+        captured_args["avoid_sentences"] = kw.get("avoid_sentences")
+        return "fresh sentence words here"
+
+    async def fake_validate(sentence, repos):
+        return ValidationResult(ok=True, words_used=["fresh", "sentence", "words"], non_ket_words=[])
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 1
+    graph.agent.config.variety.recent_window = 3
+
+    # Seed three prior sentences' worth of words.
+    graph.agent._recent_scaffolding = [["the", "cat", "runs"], ["the", "dog", "jumps"], ["a", "fish", "swims"]]
+    graph.agent._recent_sentences = ["The cat runs.", "The dog jumps.", "A fish swims."]
+
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "window"}},
+    )
+    # All 9 words from the 3 prior sentences must reach the prompt.
+    assert set(captured_args["recent_scaffolding"]) == {"the", "cat", "runs", "dog", "jumps", "a", "fish", "swims"}, (
+        "recent_scaffolding must include ALL words from the last N sentences, "
+        "not just the last N words of the most recent sentence"
+    )
+    assert set(captured_args["avoid_sentences"]) == {"The cat runs.", "The dog jumps.", "A fish swims."}
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_leak_prior_session_unfinished_sentence(setup):
+    """Regression: a kid who exits mid-sentence must NOT see the explanation
+    of that unfinished sentence when they restart. The session_start marker
+    written on REPL startup causes last_ai_message() to return None, so
+    init_state skips restoration, route_after_init goes straight to
+    select_target_word, and classify_intent never runs against the stale
+    sentence.
+    """
+    # Session 1: simulate one full turn — kid says "hi", AI emits a sentence.
+    llm1 = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
+    agent1 = await build_agent(llm_flash=llm1, llm_smart=llm1, repos=setup, info={"nickname_kid": "t", "age": 8})
+    await agent1.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "s1"}},
+    )
+    # Confirm session 1 left an AI row that COULD be restored.
+    prior = await setup.log.last_ai_message()
+    assert prior is not None and "cat" in prior["content"]
+
+    # REPL exits and restarts — main.py (via autonomous) writes the marker.
+    await setup.log.append_session_start()
+    # Now last_ai_message must return None — the prior AI is "before marker".
+    assert await setup.log.last_ai_message() is None, (
+        "session_start marker must hide AI rows from prior sessions"
+    )
+
+    # Session 2: kid's first input "hi" — without the fix, classify_intent
+    # would run against the stale sentence and likely default to translation,
+    # leaking the answer via "正确翻译" / "你的翻译有误".
+    llm2 = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        sentence_text="The dog is on the bed.",
+    )
+    agent2 = await build_agent(llm_flash=llm2, llm_smart=llm2, repos=setup, info={"nickname_kid": "t", "age": 8})
+    result = await agent2.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "s2"}},
+    )
+    ai_msg = result["messages"][-1].content
+    # The session-2 sentence must be the freshly generated one (dog), and
+    # must NOT include any evaluation/explanation of the prior session's
+    # sentence (cat).
+    assert "dog" in ai_msg, "session 2 must show a freshly generated sentence"
+    assert "正确翻译" not in ai_msg, "must NOT evaluate the prior session's unfinished sentence"
+    assert "你的翻译有误" not in ai_msg, "must NOT evaluate the prior session's unfinished sentence"
+    assert "猫" not in ai_msg, "must NOT leak the Chinese meaning of the prior session's target word"

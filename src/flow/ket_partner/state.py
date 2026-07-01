@@ -7,15 +7,18 @@ class BTPKetState(TypedDict):
     messages: List[AnyMessage]
     intent: Optional[str]
     asked_word: Optional[str]
-    wrong_words: Optional[List[str]]
-    correct_meanings: Optional[Dict[str, str]]
-    target_word_meaning: Optional[str]
+    # Unified list of words the kid mistranslated. Populated by
+    # evaluate_translation_node (filtered to last_sentence_words subset so
+    # non-KET words from retry-fallback sentences can never reach the DB).
+    # Format: [{"word": "eat", "kid_translation": "在",
+    #           "correct_translation": "吃", "contrast": "..."}]
+    wrong_words: Optional[List[Dict[str, str]]]
+    # Full Chinese translation of the last English sentence. Populated by
+    # either evaluate_translation_node (translation intent) or
+    # lookup_target_meaning_node (idk intent) so format_output_text can
+    # render "正确翻译：..." uniformly.
+    sentence_translation: Optional[str]
     asked_word_meaning: Optional[str]
-    # Populated by evaluate_translation_node when the kid mistranslates a
-    # preposition / spatial particle (in/on/at/etc.). Format:
-    # [{"word": "in", "kid_translation": "上", "correct_translation": "里",
-    #   "contrast": "in=里, on=上"}]
-    function_word_errors: Optional[List[Dict[str, str]]]
     target_word: Optional[str]
     last_target_word: Optional[str]
     last_sentence_words: Optional[List[str]]

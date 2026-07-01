@@ -57,7 +57,7 @@ async def test_graph_translation_correct_flow(setup):
     repos = setup
     responses = {
         IntentClassification: IntentClassification(intent="translation", asked_word=None),
-        TranslationEval: TranslationEval(wrong_words=[], correct_meanings={}),
+        TranslationEval: TranslationEval(correct_translation="那只大猫在这里", wrong_words=[]),
     }
     llm = _mock_llm_with_responses(responses)
     agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=repos, info={"nickname_kid": "test", "age": 8})

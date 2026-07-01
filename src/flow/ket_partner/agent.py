@@ -18,7 +18,7 @@ from flow.ket_partner.sentence_validator import validate_sentence
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
 from flow.ket_partner.vocab_selector import select_target_word
-from flow.ket_partner.word_meaning_lookup import WordMeaning, lookup_word_meaning
+from flow.ket_partner.word_meaning_lookup import WordMeaning, lookup_sentence_translation, lookup_word_meaning
 
 
 class KETPartnerAgent:
@@ -29,7 +29,14 @@ class KETPartnerAgent:
         self.info = info
         self.config = config
         self._bg_tasks = set()
+        # Per-sentence word lists — list[list[str]] so [-recent_window:]
+        # gives the last N SENTENCES (flattened for the prompt), not just
+        # the last N words of one sentence (the previous bug).
         self._recent_scaffolding: list = []
+        # Full sentence strings for hard dedup — passed to the LLM prompt
+        # AND checked post-generation to force a regen if the LLM ignores
+        # the soft constraint.
+        self._recent_sentences: list = []
 
     async def init_state(self, state: BTPKetState) -> dict:
         profile = await self.repos.profile.get()
@@ -73,17 +80,35 @@ class KETPartnerAgent:
             target=state["last_target_word"],
             kid_input=kid_input,
         )
+        # Filter to last_sentence_words subset. This is the safety net for:
+        # 1. Non-KET words — when generate_sentence_node exhausts retries and
+        #    accepts a draft with non_ket_words, those words appear in the
+        #    displayed sentence. The LLM may flag them. Without this filter
+        #    they'd reach apply_delta and create phantom stats rows.
+        # 2. LLM using wrong case / inflected forms — canonical lookup maps
+        #    "Eat" → "eat" so it matches the canonical form in last_words.
+        # 3. LLM inventing words not in the sentence — silently dropped.
+        last_words_set = set(state.get("last_sentence_words") or [])
+        filtered = []
+        for entry in result.wrong_words:
+            if entry.word in last_words_set:
+                filtered.append(entry)
+                continue
+            canonical = await self.repos.vocab.get_ket_word(entry.word)
+            if canonical and canonical in last_words_set:
+                filtered.append(entry.model_copy(update={"word": canonical}))
+            else:
+                logger.debug(f"evaluate_translation_node: dropping non-KET word '{entry.word}'")
         return {
-            "wrong_words": result.wrong_words,
-            "correct_meanings": result.correct_meanings,
-            "function_word_errors": [e.model_dump() for e in result.function_word_errors],
+            "wrong_words": [e.model_dump() for e in filtered],
+            "sentence_translation": result.correct_translation,
         }
 
     async def lookup_target_meaning_node(self, state: BTPKetState) -> dict:
-        result = await lookup_word_meaning(
-            self.llm_flash, state["last_english_sentence"], state["last_target_word"]
+        result = await lookup_sentence_translation(
+            self.llm_flash, state["last_english_sentence"]
         )
-        return {"target_word_meaning": result.meaning}
+        return {"sentence_translation": result.translation}
 
     async def lookup_asked_meaning_node(self, state: BTPKetState) -> dict:
         result = await lookup_word_meaning(
@@ -102,24 +127,47 @@ class KETPartnerAgent:
 
     async def generate_sentence_node(self, state: BTPKetState) -> dict:
         age = self.info.get("age", 8)
+        window = self.config.variety.recent_window
+        # Flatten last N sentences' worth of words (was previously a flat
+        # list sliced to its tail — only got the last 3 WORDS, not last 3
+        # sentences). Now: list[list[str]] outer, flattened here.
+        avoid_words = [w for sent_words in self._recent_scaffolding[-window:] for w in sent_words]
+        avoid_sentences = list(self._recent_sentences[-window:])
+
         sentence = await generate_sentence(
             self.llm_flash,
             target=state["target_word"],
-            recent_scaffolding=self._recent_scaffolding[-self.config.variety.recent_window:],
+            recent_scaffolding=avoid_words,
             age=age,
             min_words=self.config.sentence.min_words,
             max_words=self.config.sentence.max_words,
+            avoid_sentences=avoid_sentences,
         )
         result = None
         for _ in range(self.config.validate_retry_limit):
             result = await validate_sentence(sentence, self.repos)
-            logger.debug(f"validate_sentence: {result}")
-            if result.ok:
+            is_duplicate = sentence in self._recent_sentences
+            logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
+            if result.ok and not is_duplicate:
                 break
-            # Targeted rewrite when only a few words fail — much higher hit
-            # rate than a fresh regen. Full regen is reserved for cases where
-            # the sentence is broadly off (many non-KET words).
-            if result.non_ket_words and len(result.non_ket_words) <= self.config.sentence.rewrite_threshold:
+            # Choose retry path:
+            #   - If the sentence passed KET validation but is a duplicate,
+            #     force a FULL regen (rewrite can't reliably escape an exact
+            #     match — the LLM tends to keep the same scaffold).
+            #   - Else if few non-KET words, targeted rewrite.
+            #   - Else (many non-KET) full regen.
+            if is_duplicate:
+                logger.debug(f"regen: sentence is a duplicate of a recent one")
+                sentence = await generate_sentence(
+                    self.llm_flash,
+                    target=state["target_word"],
+                    recent_scaffolding=avoid_words,
+                    age=age,
+                    min_words=self.config.sentence.min_words,
+                    max_words=self.config.sentence.max_words,
+                    avoid_sentences=avoid_sentences,
+                )
+            elif result.non_ket_words and len(result.non_ket_words) <= self.config.sentence.rewrite_threshold:
                 logger.debug(f"rewrite_sentence: replacing {result.non_ket_words}")
                 sentence = await rewrite_sentence(
                     self.llm_flash,
@@ -129,25 +177,24 @@ class KETPartnerAgent:
                     age=age,
                     min_words=self.config.sentence.min_words,
                     max_words=self.config.sentence.max_words,
+                    avoid_sentences=avoid_sentences,
                 )
             else:
                 sentence = await generate_sentence(
                     self.llm_flash,
                     target=state["target_word"],
-                    recent_scaffolding=self._recent_scaffolding[-self.config.variety.recent_window:],
+                    recent_scaffolding=avoid_words,
                     age=age,
                     min_words=self.config.sentence.min_words,
                     max_words=self.config.sentence.max_words,
+                    avoid_sentences=avoid_sentences,
                 )
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
-            # The loop just regenerated `sentence` but never validated it — `result`
-            # still holds the validation of the PREVIOUS draft. Re-validate the
-            # current sentence so words_used matches what the kid actually sees,
-            # otherwise exposure is tracked for words that aren't in the displayed
-            # sentence.
             result = await validate_sentence(sentence, self.repos)
-        self._recent_scaffolding.extend(result.words_used)
+            logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
+        self._recent_scaffolding.append(result.words_used)
+        self._recent_sentences.append(sentence)
         # Per spec §11.9, exposed_count is incremented once per word in the
         # NEW sentence. Do this here (on the generate path) so non-generate
         # turns do not re-count the prior sentence's words. Set the flag so
@@ -365,4 +412,10 @@ async def autonomous(info: dict, db_path: str = "ket_partner.db", csv_path: Opti
     `aclose()` on shutdown.
     """
     repos = await init_db(db_path, csv_path=csv_path)
+    # Mark session boundary so last_ai_message() ignores rows from prior
+    # sessions. Without this, a kid who exits mid-sentence sees the
+    # explanation of that unfinished sentence on restart (init_state
+    # would restore it, classify_intent would default to translation/idk,
+    # and the answer would leak).
+    await repos.log.append_session_start()
     return await build_agent(llm_flash, llm_plus, repos, info)

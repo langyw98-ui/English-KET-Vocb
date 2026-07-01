@@ -4,8 +4,11 @@ from flow.ket_partner.db import Repos
 async def apply_mastery_updates(state: dict, repos: Repos) -> None:
     intent = state.get("intent")
     if intent == "translation":
+        # wrong_words is a list of dicts: [{"word": "eat", ...}, ...].
+        # It's already been filtered to last_sentence_words subset by
+        # evaluate_translation_node, so all entries are KET canonical forms.
         last_words = state.get("last_sentence_words") or []
-        wrong = set(state.get("wrong_words") or [])
+        wrong = {w["word"] for w in state.get("wrong_words") or []}
         for w in last_words:
             delta = -1 if w in wrong else 1
             await repos.stats.apply_delta(w, delta=delta, exposed=False)
@@ -31,33 +34,21 @@ def format_output_text(state: dict, new_sentence: str) -> str:
 
     if intent == "translation":
         wrong = state.get("wrong_words") or []
-        meanings = state.get("correct_meanings") or {}
+        sentence_t = state.get("sentence_translation", "")
         if wrong:
-            lines.append("上句解析:")
-            for w in wrong:
-                m = meanings.get(w, "?")
-                lines.append(f"  - {w} →「{m}」")
-            target = state.get("last_target_word")
-            if target and target not in wrong:
-                lines.append(f"  - {target} → ✓")
-            lines.append("")
-        fw_errors = state.get("function_word_errors") or []
-        if fw_errors:
-            lines.append("注意介词 / 方位词:")
-            for e in fw_errors:
-                kid = e.get("kid_translation", "?")
-                correct = e.get("correct_translation", "?")
-                lines.append(f"  - {e.get('word','?')} 应该是「{correct}」，你写的是「{kid}」")
-                contrast = e.get("contrast")
-                if contrast:
-                    lines.append(f"    对比: {contrast}")
-            lines.append("")
+            if sentence_t:
+                lines.append(f"正确翻译：{sentence_t}")
+            lines.append("你的翻译有误:")
+            for entry in wrong:
+                word = entry.get("word", "?")
+                correct = entry.get("correct_translation", "?")
+                kid = entry.get("kid_translation", "")
+                if kid:
+                    lines.append(f" {word} 的意思是：{correct}")
     elif intent == "idk":
-        target = state.get("last_target_word")
-        meaning = state.get("target_word_meaning", "")
-        lines.append("上句学习:")
-        lines.append(f"  - {target} 的意思是「{meaning}」")
-        lines.append("")
+        sentence_t = state.get("sentence_translation", "")
+        if sentence_t:
+            lines.append(f"正确翻译：{sentence_t}")
 
     lines.append("请把这句译成中文:")
     lines.append(f'"{new_sentence}"')

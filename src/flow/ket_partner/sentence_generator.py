@@ -8,6 +8,7 @@ Constraints:
 - {min_words}-{max_words} words, single sentence.
 - Naturally include the target word: "{target}".
 - Vary scaffolding words. Don't reuse words from recent sentences: {recent}.
+- Do NOT output any of these exact sentences (must differ in wording, subject, or scene): {avoid}
 - Prefer words the kid has likely mastered.
 - All words must be from KET vocabulary (will be validated).
 - Fun & memorable (silly situations OK).
@@ -24,14 +25,17 @@ async def generate_sentence(
     age: int,
     min_words: int,
     max_words: int,
+    avoid_sentences: list = None,
 ) -> str:
     creative = llm.bind(temperature=0.8)
+    avoid_sentences = avoid_sentences or []
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
         max_words=max_words,
         target=target,
         recent=", ".join(recent_scaffolding) or "(none yet)",
+        avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
     )
     messages = [
         SystemMessage(content=system_text),
@@ -54,6 +58,7 @@ Your job: replace ONLY these words: {replace}.
 - Keep the target word "{target}" in the sentence.
 - Replace each listed word with a KET-vocabulary alternative that fits the context.
 - Do NOT touch any other word.
+- The result must NOT equal any of these recent sentences (change wording if needed): {avoid}
 - Length stays {min_words}-{max_words} words.
 - NO emoji, NO Chinese.
 
@@ -71,12 +76,14 @@ async def rewrite_sentence(
     age: int,
     min_words: int,
     max_words: int,
+    avoid_sentences: list = None,
 ) -> str:
     """Targeted rewrite: ask the LLM to swap specific non-KET words while
     preserving the rest of the sentence. Used when validation fails on a
     small number of words — far higher hit-rate than a fresh regen.
     """
     creative = llm.bind(temperature=0.6)
+    avoid_sentences = avoid_sentences or []
     replace_str = ", ".join(replace_words)
     system_text = _REWRITE_SYSTEM.format(
         age=age,
@@ -85,6 +92,7 @@ async def rewrite_sentence(
         min_words=min_words,
         max_words=max_words,
         original=original,
+        avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
     )
     messages = [
         SystemMessage(content=system_text),

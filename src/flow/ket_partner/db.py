@@ -336,9 +336,21 @@ class LogRepo:
         ]
 
     async def last_ai_message(self) -> Optional[dict]:
+        """Return the most recent AI message IN THE CURRENT SESSION.
+
+        A session boundary is marked by a row with role='system',
+        content='session_start' (written by main.py on REPL startup).
+        Only AI rows AFTER the most recent such marker are considered.
+        If no marker exists yet (fresh DB), all AI rows are eligible —
+        backward compat for databases populated before this feature.
+        """
         async with self._db.execute(
             "SELECT content, words_used, target_words FROM conversation_log "
-            "WHERE role='ai' ORDER BY id DESC LIMIT 1"
+            "WHERE role='ai' AND id > COALESCE("
+            "    (SELECT MAX(id) FROM conversation_log "
+            "     WHERE role='system' AND content='session_start'),"
+            "    0"
+            ") ORDER BY id DESC LIMIT 1"
         ) as cur:
             row = await cur.fetchone()
         if row is None:
@@ -348,6 +360,14 @@ class LogRepo:
             "words_used": json.loads(row[1]) if row[1] else [],
             "target_words": json.loads(row[2]) if row[2] else [],
         }
+
+    async def append_session_start(self) -> None:
+        """Mark the start of a new REPL session. Subsequent calls to
+        last_ai_message will ignore AI rows from before this marker,
+        so a kid who exits mid-sentence won't be shown the explanation
+        of that sentence on restart.
+        """
+        await self.append(role="system", content="session_start")
 
 
 class Repos:
