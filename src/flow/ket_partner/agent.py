@@ -14,6 +14,7 @@ from flow.ket_partner.input_classifier import IntentClassification, classify_int
 from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 from flow.ket_partner.profile_summarizer import run_profile_summary
 from flow.ket_partner.sentence_generator import generate_sentence, rewrite_sentence
+from flow.ket_partner.sentence_naturalness import check_naturalness
 from flow.ket_partner.sentence_validator import validate_sentence
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
@@ -134,61 +135,56 @@ class KETPartnerAgent:
         avoid_words = [w for sent_words in self._recent_scaffolding[-window:] for w in sent_words]
         avoid_sentences = list(self._recent_sentences[-window:])
 
-        sentence = await generate_sentence(
-            self.llm_flash,
-            target=state["target_word"],
-            recent_scaffolding=avoid_words,
-            age=age,
-            min_words=self.config.sentence.min_words,
-            max_words=self.config.sentence.max_words,
-            avoid_sentences=avoid_sentences,
-        )
+        def _regen(hint: str = ""):
+            return generate_sentence(
+                self.llm_flash,
+                target=state["target_word"],
+                recent_scaffolding=avoid_words,
+                age=age,
+                min_words=self.config.sentence.min_words,
+                max_words=self.config.sentence.max_words,
+                avoid_sentences=avoid_sentences,
+                naturalness_hint=hint,
+            )
+
+        sentence = await _regen()
         result = None
+        naturalness_hint = ""
         for _ in range(self.config.validate_retry_limit):
             result = await validate_sentence(sentence, self.repos)
             is_duplicate = sentence in self._recent_sentences
             logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
-            if result.ok and not is_duplicate:
+            if not result.ok or is_duplicate:
+                # KET-word or duplicate failure — same retry routing as before.
+                if is_duplicate:
+                    logger.debug(f"regen: sentence is a duplicate of a recent one")
+                    sentence = await _regen(hint=naturalness_hint)
+                elif result.non_ket_words and len(result.non_ket_words) <= self.config.sentence.rewrite_threshold:
+                    logger.debug(f"rewrite_sentence: replacing {result.non_ket_words}")
+                    sentence = await rewrite_sentence(
+                        self.llm_flash,
+                        original=sentence,
+                        replace_words=result.non_ket_words,
+                        target=state["target_word"],
+                        age=age,
+                        min_words=self.config.sentence.min_words,
+                        max_words=self.config.sentence.max_words,
+                        avoid_sentences=avoid_sentences,
+                    )
+                else:
+                    sentence = await _regen(hint=naturalness_hint)
+                continue
+            # KET + dedup passed — run naturalness check only on candidates
+            # that survived the cheap gates, so we don't burn LLM calls on
+            # sentences that will be regenerated anyway.
+            naturalness = await check_naturalness(self.llm_flash, sentence, age=age)
+            logger.debug(f"check_naturalness: ok={naturalness.ok} reason={naturalness.reason!r}")
+            if naturalness.ok:
                 break
-            # Choose retry path:
-            #   - If the sentence passed KET validation but is a duplicate,
-            #     force a FULL regen (rewrite can't reliably escape an exact
-            #     match — the LLM tends to keep the same scaffold).
-            #   - Else if few non-KET words, targeted rewrite.
-            #   - Else (many non-KET) full regen.
-            if is_duplicate:
-                logger.debug(f"regen: sentence is a duplicate of a recent one")
-                sentence = await generate_sentence(
-                    self.llm_flash,
-                    target=state["target_word"],
-                    recent_scaffolding=avoid_words,
-                    age=age,
-                    min_words=self.config.sentence.min_words,
-                    max_words=self.config.sentence.max_words,
-                    avoid_sentences=avoid_sentences,
-                )
-            elif result.non_ket_words and len(result.non_ket_words) <= self.config.sentence.rewrite_threshold:
-                logger.debug(f"rewrite_sentence: replacing {result.non_ket_words}")
-                sentence = await rewrite_sentence(
-                    self.llm_flash,
-                    original=sentence,
-                    replace_words=result.non_ket_words,
-                    target=state["target_word"],
-                    age=age,
-                    min_words=self.config.sentence.min_words,
-                    max_words=self.config.sentence.max_words,
-                    avoid_sentences=avoid_sentences,
-                )
-            else:
-                sentence = await generate_sentence(
-                    self.llm_flash,
-                    target=state["target_word"],
-                    recent_scaffolding=avoid_words,
-                    age=age,
-                    min_words=self.config.sentence.min_words,
-                    max_words=self.config.sentence.max_words,
-                    avoid_sentences=avoid_sentences,
-                )
+            # Naturalness failed — regen with the rejection reason fed back so
+            # the LLM can avoid the same kind of nonsense this time.
+            naturalness_hint = naturalness.reason
+            sentence = await _regen(hint=naturalness_hint)
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
             result = await validate_sentence(sentence, self.repos)

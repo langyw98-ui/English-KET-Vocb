@@ -7,6 +7,7 @@ from langchain.messages import HumanMessage
 from flow.ket_partner.agent import build_agent
 from flow.ket_partner.db import init_db
 from flow.ket_partner.input_classifier import IntentClassification
+from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.translation_evaluator import TranslationEval
 from flow.ket_partner.word_meaning_lookup import WordMeaning
 
@@ -23,6 +24,8 @@ async def setup(temp_db_path):
 
 
 def _mock_llm_with_responses(responses: dict):
+    # Default naturalness to ok so tests that don't care about it pass through.
+    responses.setdefault(NaturalnessResult, NaturalnessResult(ok=True, reason=""))
     llm = MagicMock()
     def structured(schema, **kwargs):
         bound = MagicMock()

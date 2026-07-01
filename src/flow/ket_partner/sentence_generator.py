@@ -11,10 +11,16 @@ Constraints:
 - Do NOT output any of these exact sentences (must differ in wording, subject, or scene): {avoid}
 - Prefer words the kid has likely mastered.
 - All words must be from KET vocabulary (will be validated).
-- Fun & memorable (silly situations OK).
+- Must be NATURAL and make real-world sense. Subject-verb-object must reflect how things actually behave. No nonsense like "ice cream makes my nose move" or "the book sings".
+- Playful or imaginative situations are fine, but only if internally coherent.
 - NO emoji, NO Chinese.
-
+{hint_block}
 Output: just the English sentence, nothing else.
+"""
+
+_HINT_BLOCK = """
+Previous attempt rejected by naturalness check: {hint}
+Avoid that specific issue this time.
 """
 
 
@@ -26,9 +32,11 @@ async def generate_sentence(
     min_words: int,
     max_words: int,
     avoid_sentences: list = None,
+    naturalness_hint: str = "",
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
+    hint_block = _HINT_BLOCK.format(hint=naturalness_hint) if naturalness_hint else ""
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
@@ -36,6 +44,7 @@ async def generate_sentence(
         target=target,
         recent=", ".join(recent_scaffolding) or "(none yet)",
         avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
+        hint_block=hint_block,
     )
     messages = [
         SystemMessage(content=system_text),

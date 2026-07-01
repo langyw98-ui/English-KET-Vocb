@@ -8,13 +8,19 @@ from langchain.messages import AIMessage, HumanMessage
 from flow.ket_partner.agent import build_agent
 from flow.ket_partner.db import init_db
 from flow.ket_partner.input_classifier import IntentClassification
+from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.translation_evaluator import TranslationEval
 from flow.ket_partner.word_meaning_lookup import SentenceTranslation, WordMeaning
 
 
-def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translation_resp=None, sentence_text="The cat is on the bed."):
+def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translation_resp=None, naturalness_resp=None, sentence_text="The cat is on the bed."):
     llm = MagicMock()
-    responses = {IntentClassification: intent_resp}
+    responses = {
+        IntentClassification: intent_resp,
+        # Default naturalness to "ok" — most tests don't care about it and
+        # would otherwise NoOp through the retry loop with None.
+        NaturalnessResult: naturalness_resp if naturalness_resp is not None else NaturalnessResult(ok=True, reason=""),
+    }
     if eval_resp:
         responses[TranslationEval] = eval_resp
     if meaning_resp:
@@ -180,12 +186,16 @@ def _mock_llm_seq(
     eval_resp=None,
     meaning_resp=None,
     sentence_translation_resp=None,
+    naturalness_resp=None,
     sentence_texts=("The cat is on the bed.",),
 ):
     """Like _mock_llm but cycles through `sentence_texts` on successive
     .bind().ainvoke calls (one per generate_sentence call)."""
     llm = MagicMock()
-    responses = {IntentClassification: intent_resp}
+    responses = {
+        IntentClassification: intent_resp,
+        NaturalnessResult: naturalness_resp if naturalness_resp is not None else NaturalnessResult(ok=True, reason=""),
+    }
     if eval_resp:
         responses[TranslationEval] = eval_resp
     if meaning_resp:
@@ -802,3 +812,104 @@ async def test_restart_does_not_leak_prior_session_unfinished_sentence(setup):
     assert "正确翻译" not in ai_msg, "must NOT evaluate the prior session's unfinished sentence"
     assert "你的翻译有误" not in ai_msg, "must NOT evaluate the prior session's unfinished sentence"
     assert "猫" not in ai_msg, "must NOT leak the Chinese meaning of the prior session's target word"
+
+
+@pytest.mark.asyncio
+async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
+    """Regression: 'The cold ice cream makes my nose move.' passes KET
+    validation but is semantically nonsensical. The retry loop must call
+    check_naturalness after KET+dedup pass, and on rejection, regenerate
+    with the rejection reason fed back into the prompt.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    # First draft is nonsensical; second (regen) is natural.
+    generate_seq = iter([
+        "The cold ice cream makes my nose move.",
+        "The cold ice cream makes my teeth hurt.",
+    ])
+
+    captured_hints = []
+
+    async def fake_generate(*a, **kw):
+        # Record the naturalness_hint so we can verify the reason was fed back.
+        captured_hints.append(kw.get("naturalness_hint", ""))
+        return next(generate_seq)
+
+    async def fake_validate(sentence, repos):
+        return ValidationResult(ok=True, words_used=["the", "cold", "ice", "cream", "makes", "my", "nose", "move"], non_ket_words=[])
+
+    # First call rejects (nonsense), second accepts (natural).
+    nat_seq = iter([
+        NaturalnessResult(ok=False, reason="ice cream does not make noses move"),
+        NaturalnessResult(ok=True, reason=""),
+    ])
+
+    async def fake_naturalness(llm, sentence, age=8):
+        return next(nat_seq)
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 3
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "nat"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # The kid must see the natural regenerated sentence, not the nonsense one.
+    assert "teeth" in ai_msg, "naturalness rejection must trigger regen with a better sentence"
+    assert "nose move" not in ai_msg, "the nonsensical first draft must not be shown"
+
+    # The hint must have been propagated to the second generate_sentence call.
+    assert len(captured_hints) >= 2, "generate_sentence must be called twice (initial + regen)"
+    assert captured_hints[1] == "ice cream does not make noses move", (
+        "the naturalness rejection reason must be fed back as naturalness_hint"
+    )
+
+
+@pytest.mark.asyncio
+async def test_naturalness_check_skipped_when_ket_validation_fails(setup, monkeypatch):
+    """The naturalness LLM call is expensive — it must only run on candidates
+    that survived the cheap KET+dedup gates. When KET validation fails, the
+    retry path is the existing rewrite/regen branch and check_naturalness
+    must NOT be invoked.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    naturalness_calls = {"count": 0}
+
+    async def fake_generate(*a, **kw):
+        return "alpha bravo charlie"  # all non-KET
+
+    async def fake_validate(sentence, repos):
+        # Always fails KET — never passes the cheap gate.
+        return ValidationResult(ok=False, words_used=[], non_ket_words=["alpha", "bravo", "charlie"])
+
+    async def fake_naturalness(llm, sentence, age=8):
+        naturalness_calls["count"] += 1
+        return NaturalnessResult(ok=True, reason="")
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "skip-nat"}},
+    )
+    assert naturalness_calls["count"] == 0, (
+        "check_naturalness must NOT be called when KET validation fails (cost gate)"
+    )
