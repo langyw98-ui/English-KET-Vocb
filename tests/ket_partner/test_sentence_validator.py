@@ -14,11 +14,25 @@ async def repos(temp_db_path):
         "dog,n,Animals\n"
         "big,adj,\n"
         "small,adj,\n"
+        "happy,adj,\n"
         "is,v,\n"
+        "are,v,\n"
+        "go,v,Action\n"
         "the,det,\n"
         "a,det,\n"
         "on,prep,\n"
         "bed,n,\n"
+        "hat,n,Clothing\n"
+        "cake,n,Food\n"
+        "wear,v,Clothing\n"
+        "watch,v,Action\n"
+        "walk,v,Action\n"
+        "run,v,Action\n"
+        "bake,v,Food\n"
+        "bake,v,Food\n"
+        "story,n,Reading\n"
+        "try,v,Action\n"
+        "large,adj,Size\n"
     )
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
@@ -47,3 +61,76 @@ async def test_validate_lemma_reduces_to_ket_root(repos):
     result = await validate_sentence("The cats are on the bed.", repos)
     # 'cats' lemmatizes to 'cat' which is KET
     assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_validate_handles_verb_inflections(repos):
+    """Regular verb tense inflections must reduce to the KET root.
+    Without this, generated sentences like 'wears' / 'walked' / 'running'
+    were misclassified as non-KET.
+    """
+    # 3rd-person singular -s
+    r1 = await validate_sentence("The cat wears a hat.", repos)
+    assert r1.ok is True, f"wears should reduce to wear; got non_ket={r1.non_ket_words}"
+    assert "wear" in r1.words_used
+    # past tense -ed
+    r2 = await validate_sentence("The dog walked.", repos)
+    assert r2.ok is True
+    assert "walk" in r2.words_used
+    # -ed where verb ends in 'e' (drop only d): baked → bake
+    r3 = await validate_sentence("The big cake baked.", repos)
+    assert r3.ok is True, f"baked should reduce to bake; got non_ket={r3.non_ket_words}"
+    assert "bake" in r3.words_used
+    # gerund -ing with doubled consonant: running → run
+    r4 = await validate_sentence("The dog is running.", repos)
+    assert r4.ok is True, f"running should reduce to run; got non_ket={r4.non_ket_words}"
+    assert "run" in r4.words_used
+    # -ing where verb ends in 'e': baking → bake
+    r5 = await validate_sentence("The big cake is baking.", repos)
+    assert r5.ok is True, f"baking should reduce to bake; got non_ket={r5.non_ket_words}"
+    assert "bake" in r5.words_used
+
+
+@pytest.mark.asyncio
+async def test_validate_handles_noun_plurals(repos):
+    # -ies → y: stories → story
+    r1 = await validate_sentence("The happy stories.", repos)
+    assert r1.ok is True, f"stories should reduce to story; got non_ket={r1.non_ket_words}"
+    assert "story" in r1.words_used
+    # -es: watches → watch
+    r2 = await validate_sentence("The dog watches.", repos)
+    assert r2.ok is True, f"watches should reduce to watch; got non_ket={r2.non_ket_words}"
+    assert "watch" in r2.words_used
+
+
+@pytest.mark.asyncio
+async def test_validate_handles_comparatives_and_superlatives(repos):
+    # -ier → y: happier → happy
+    r1 = await validate_sentence("The happier dog walked.", repos)
+    assert r1.ok is True, f"happier should reduce to happy; got non_ket={r1.non_ket_words}"
+    assert "happy" in r1.words_used
+    # -er: bigger → big
+    r2 = await validate_sentence("The bigger dog walked.", repos)
+    assert r2.ok is True
+    assert "big" in r2.words_used
+    # -er where adj ends in 'e': larger → large
+    r3 = await validate_sentence("The larger dog walked.", repos)
+    assert r3.ok is True, f"larger should reduce to large; got non_ket={r3.non_ket_words}"
+    assert "large" in r3.words_used
+    # -iest → y: happiest → happy
+    r4 = await validate_sentence("The happiest dog walked.", repos)
+    assert r4.ok is True
+    assert "happy" in r4.words_used
+    # -est: biggest → big
+    r5 = await validate_sentence("The biggest dog walked.", repos)
+    assert r5.ok is True
+    assert "big" in r5.words_used
+
+
+@pytest.mark.asyncio
+async def test_validate_lemma_overrides_rule_based(repos):
+    """Explicit lemma entries in lemmas.json (irregular forms) must take
+    precedence over rule-based suffix stripping."""
+    # 'went' is in lemmas.json → 'go'. Rule-based stripping would give 'wt' or similar.
+    r = await validate_sentence("The dog went big.", repos)
+    assert "go" in r.words_used, "irregular lemma 'went→go' must take precedence"

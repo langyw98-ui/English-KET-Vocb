@@ -113,6 +113,7 @@ class KETPartnerAgent:
         result = None
         for _ in range(self.config.validate_retry_limit):
             result = await validate_sentence(sentence, self.repos)
+            logger.debug(f"validate_sentence: {result}")
             if result.ok:
                 break
             sentence = await generate_sentence(
@@ -125,9 +126,11 @@ class KETPartnerAgent:
             )
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
-        # Reuse the last validation result instead of calling validate_sentence
-        # a second time (was a redundant extra call).
-        if result is None:
+            # The loop just regenerated `sentence` but never validated it — `result`
+            # still holds the validation of the PREVIOUS draft. Re-validate the
+            # current sentence so words_used matches what the kid actually sees,
+            # otherwise exposure is tracked for words that aren't in the displayed
+            # sentence.
             result = await validate_sentence(sentence, self.repos)
         self._recent_scaffolding.extend(result.words_used)
         # Per spec §11.9, exposed_count is incremented once per word in the
@@ -165,17 +168,17 @@ class KETPartnerAgent:
     async def explain_meaning_node(self, state: BTPKetState) -> dict:
         asked = state["asked_word"]
         meaning = state.get("asked_word_meaning", "")
-        text = f'💡 "{asked}" 的意思是「{meaning}」。\n(继续翻译上句吧)'
+        text = f'"{asked}" 的意思是「{meaning}」。\n(继续翻译上句吧)'
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def redirect_to_translate_node(self, state: BTPKetState) -> dict:
         last = state.get("last_english_sentence") or ""
-        text = f"我们继续翻译练习吧。\n🔤 上一句:{last}"
+        text = f"我们继续翻译练习吧。\n上一句:{last}"
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def compliance_redirect_node(self, state: BTPKetState) -> dict:
         last = state.get("last_english_sentence") or ""
-        text = f"我们换个健康的话题继续练习吧。\n🔤 上一句:{last}"
+        text = f"我们换个健康的话题继续练习吧。\n上一句:{last}"
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def persist_turn_node(self, state: BTPKetState) -> dict:

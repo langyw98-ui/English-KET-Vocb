@@ -132,4 +132,4 @@ def test_format_output_first_turn_no_feedback():
         "intent": None,
     }
     text = format_output_text(state, new_sentence="The dog runs.")
-    assert text.strip().startswith("🔤") or "The dog runs." in text
+    assert "The dog runs." in text

@@ -45,10 +45,9 @@ async def test_graph_first_turn_generates_sentence(setup):
         config={"configurable": {"thread_id": "t1"}},
     )
     ai_msg = result["messages"][-1].content
-    # Tightened (was `or`): the 🔤 prefix is always emitted even when the
-    # sentence is empty (C1 bug). Require BOTH the prefix AND a real sentence
-    # body that contains the target word.
-    assert "🔤" in ai_msg and "big cat" in ai_msg
+    # Require BOTH the translation prompt AND a real sentence body that
+    # contains the target word.
+    assert "请把这句译成中文" in ai_msg and "big cat" in ai_msg
     # R2: explicit non-empty content assertion.
     assert "big cat" in ai_msg.lower()
 

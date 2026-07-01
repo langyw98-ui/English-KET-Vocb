@@ -28,7 +28,7 @@ def format_output_text(state: dict, new_sentence: str) -> str:
         wrong = state.get("wrong_words") or []
         meanings = state.get("correct_meanings") or {}
         if wrong:
-            lines.append("📖 上句解析:")
+            lines.append("上句解析:")
             for w in wrong:
                 m = meanings.get(w, "?")
                 lines.append(f"  - {w} →「{m}」")
@@ -38,7 +38,7 @@ def format_output_text(state: dict, new_sentence: str) -> str:
             lines.append("")
         fw_errors = state.get("function_word_errors") or []
         if fw_errors:
-            lines.append("⚠️ 注意介词 / 方位词:")
+            lines.append("注意介词 / 方位词:")
             for e in fw_errors:
                 kid = e.get("kid_translation", "?")
                 correct = e.get("correct_translation", "?")
@@ -50,7 +50,7 @@ def format_output_text(state: dict, new_sentence: str) -> str:
     elif intent == "idk":
         target = state.get("last_target_word")
         meaning = state.get("target_word_meaning", "")
-        lines.append("📖 上句学习:")
+        lines.append("上句学习:")
         lines.append(f"  - {target} 的意思是「{meaning}」")
         lines.append("")
 

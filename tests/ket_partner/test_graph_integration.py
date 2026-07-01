@@ -52,10 +52,8 @@ async def test_first_turn_generates_sentence(setup):
         config={"configurable": {"thread_id": "first"}},
     )
     ai_msg = result["messages"][-1].content
-    # Tightened (was `assert "🔤" in ...`): the prefix is always emitted even
-    # when the sentence is empty (C1 bug). Require both prefix and a real
-    # non-empty sentence.
-    assert "🔤" in ai_msg
+    # Require both the translation prompt and a real non-empty sentence.
+    assert "请把这句译成中文" in ai_msg
     assert "cat" in ai_msg.lower()
     # The quoted sentence body must not be empty.
     assert '""' not in ai_msg
@@ -233,7 +231,7 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
     )
     ai1 = r1["messages"][-1].content
     # C1 regression: sentence must be non-empty AND contain the target word.
-    assert "🔤" in ai1, "translation prompt prefix must be present"
+    assert "请把这句译成中文" in ai1, "translation prompt must be present"
     assert "cat" in ai1.lower(), "turn-1 AI message must contain the target word 'cat'"
     assert '""' not in ai1, "turn-1 AI message must NOT have an empty quoted sentence (C1)"
 
@@ -454,8 +452,68 @@ async def test_function_word_error_renders_contrast(setup):
     ai_msg = result["messages"][-1].content
 
     # The warning block must appear with the contrast explanation.
-    assert "⚠️ 注意介词" in ai_msg, "function_word_errors must produce a warning block"
+    assert "注意介词" in ai_msg, "function_word_errors must produce a warning block"
     assert "in" in ai_msg
     assert "里" in ai_msg
     assert "上" in ai_msg
     assert "in = 里" in ai_msg or "in=里" in ai_msg, "contrast string must be rendered"
+
+
+@pytest.mark.asyncio
+async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monkeypatch):
+    """Regression: when validation fails after all retries, the agent must
+    track exposure for words in the FINAL displayed sentence, not the
+    previous retry's sentence.
+
+    Before the fix, the for-loop in generate_sentence_node would regenerate
+    `sentence` after a failed validation but leave `result` holding the
+    previous validation. The kid saw the new sentence but exposure was
+    tracked for words that weren't in it.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    # Sentence sequence: retry 1 → "alpha beta"; retry 2 (final) → "gamma delta".
+    sentence_seq = iter(["The alpha beta.", "The gamma delta."])
+
+    async def fake_generate(*a, **kw):
+        return next(sentence_seq)
+
+    # Validation always fails (so the loop exhausts) — but words_used differs
+    # per sentence, so we can tell WHICH sentence's words got tracked.
+    async def fake_validate(sentence, repos):
+        if "alpha" in sentence:
+            return ValidationResult(ok=False, words_used=["alpha"], non_ket_words=["beta"])
+        return ValidationResult(ok=False, words_used=["gamma"], non_ket_words=["delta"])
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    # Force a small retry limit so the test doesn't loop forever.
+    original_limit = graph.agent.config.validate_retry_limit
+    graph.agent.config.validate_retry_limit = 1
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "stale"}},
+    )
+    graph.agent.config.validate_retry_limit = original_limit
+
+    ai_msg = result["messages"][-1].content
+    # The kid saw the FINAL sentence ("gamma delta"), not the first ("alpha beta").
+    assert "gamma" in ai_msg, "kid must see the final regenerated sentence"
+    assert "alpha" not in ai_msg, "kid must NOT see the abandoned first draft"
+
+    # Exposure must be tracked for the displayed sentence's words (gamma),
+    # not the abandoned draft's words (alpha).
+    gamma = await setup.stats.get("gamma")
+    alpha = await setup.stats.get("alpha")
+    assert gamma is not None and gamma["exposed_count"] >= 1, (
+        "exposure must be tracked for the displayed sentence's word 'gamma'"
+    )
+    assert alpha is None or alpha["exposed_count"] == 0, (
+        "exposure must NOT be tracked for the abandoned draft's word 'alpha'"
+    )

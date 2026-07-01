@@ -37,8 +37,10 @@ async def generate_sentence(
         SystemMessage(content=system_text),
         HumanMessage(content=f"Write a sentence using target word '{target}'."),
     ]
+    logger.debug(f"generate_sentence: {messages}")
     try:
         response = await creative.ainvoke(messages)
+        logger.debug(f"generate_sentence: {response.content.strip()}")
         return response.content.strip()
     except Exception as e:
         logger.warning(f"generate_sentence failed: {e}")
