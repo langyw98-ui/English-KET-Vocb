@@ -110,11 +110,26 @@ async def test_idk_deducts_target_only(setup):
         {"messages": [HumanMessage(content="我不会")]},
         config={"configurable": {"thread_id": "idk"}},
     )
-    cat = await setup.stats.get("cat")
-    bed = await setup.stats.get("bed")
-    assert cat["wrong_count"] >= 1
-    if bed:
-        assert bed["wrong_count"] == 0
+    # The turn-1 target word is picked via ORDER BY RANDOM() (topic then word),
+    # so read the actual target from the log rather than hard-coding `cat`.
+    history = await setup.log.recent(limit=20)
+    ai_messages = [h for h in history if h["role"] == "ai"]
+    assert ai_messages, "expected at least one AI message"
+    t1_target = ai_messages[0]["target_words"][0] if ai_messages[0]["target_words"] else None
+    assert t1_target is not None, "turn 1 should have set a target word"
+
+    # After idk, the turn-1 target should have wrong_count >= 1
+    target_stats = await setup.stats.get(t1_target)
+    assert target_stats is not None
+    assert target_stats["wrong_count"] >= 1
+
+    # idk should only deduct the target — no other word should have wrong_count > 0
+    async with setup.log._db.execute(
+        "SELECT word, wrong_count FROM vocab_stats WHERE wrong_count > 0"
+    ) as cur:
+        rows = await cur.fetchall()
+    wrong_words = {r[0] for r in rows}
+    assert wrong_words == {t1_target}, f"only the target should be deducted, got {wrong_words}"
 
 
 @pytest.mark.asyncio
