@@ -36,6 +36,17 @@ def format_output_text(state: dict, new_sentence: str) -> str:
             if target and target not in wrong:
                 lines.append(f"  - {target} → ✓")
             lines.append("")
+        fw_errors = state.get("function_word_errors") or []
+        if fw_errors:
+            lines.append("⚠️ 注意介词 / 方位词:")
+            for e in fw_errors:
+                kid = e.get("kid_translation", "?")
+                correct = e.get("correct_translation", "?")
+                lines.append(f"  - {e.get('word','?')} 应该是「{correct}」，你写的是「{kid}」")
+                contrast = e.get("contrast")
+                if contrast:
+                    lines.append(f"    对比: {contrast}")
+            lines.append("")
     elif intent == "idk":
         target = state.get("last_target_word")
         meaning = state.get("target_word_meaning", "")
@@ -43,6 +54,6 @@ def format_output_text(state: dict, new_sentence: str) -> str:
         lines.append(f"  - {target} 的意思是「{meaning}」")
         lines.append("")
 
-    lines.append("🔤 请把这句译成中文:")
+    lines.append("请把这句译成中文:")
     lines.append(f'"{new_sentence}"')
     return "\n".join(lines)

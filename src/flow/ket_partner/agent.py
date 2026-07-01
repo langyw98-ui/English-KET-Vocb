@@ -73,7 +73,11 @@ class KETPartnerAgent:
             target=state["last_target_word"],
             kid_input=kid_input,
         )
-        return {"wrong_words": result.wrong_words, "correct_meanings": result.correct_meanings}
+        return {
+            "wrong_words": result.wrong_words,
+            "correct_meanings": result.correct_meanings,
+            "function_word_errors": [e.model_dump() for e in result.function_word_errors],
+        }
 
     async def lookup_target_meaning_node(self, state: BTPKetState) -> dict:
         result = await lookup_word_meaning(

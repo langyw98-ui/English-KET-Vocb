@@ -25,7 +25,7 @@ async def run_profile_summary(llm, repos: Repos) -> None:
     recent = await repos.log.recent(limit=20)
     log_text = "\n".join(f"[{r['role']}] {r['content']}" for r in recent)
 
-    structured = llm.with_structured_output(ProfileSummary)
+    structured = llm.with_structured_output(ProfileSummary, method="function_calling")
     messages = [
         SystemMessage(content=_SYSTEM),
         HumanMessage(content=f"当前 weakness: {profile['weakness_words']}"),

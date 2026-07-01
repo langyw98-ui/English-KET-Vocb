@@ -28,41 +28,59 @@ async def _fetch_all_stats(repos: Repos) -> List[dict]:
 
 
 def _classify(row: dict, cfg: KetConfig) -> str:
+    if row["exposed_count"] == 0:
+        return "unused"
     if row["status"] == "mastered":
         return "mastered"
     if (row["wrong_count"] >= cfg.struggling_threshold.wrong_count_min
         or (row["exposed_count"] >= cfg.struggling_threshold.exposed_count_min
             and row["mastery_score"] == 0)):
         return "struggling"
-    return "learning"
+    return "used"
 
 
 def _render_markdown(profile: dict, rows: List[dict], cfg: KetConfig) -> str:
     mastered = [r for r in rows if _classify(r, cfg) == "mastered"]
-    learning = [r for r in rows if _classify(r, cfg) == "learning"]
+    used = [r for r in rows if _classify(r, cfg) == "used"]
+    unused = [r for r in rows if _classify(r, cfg) == "unused"]
     struggling = [r for r in rows if _classify(r, cfg) == "struggling"]
     lines = [
         f"# 学习报告 - {profile.get('nickname') or '小朋友'}",
         f"总轮数: {profile.get('total_turns', 0)}",
         "",
         f"## 已掌握 ({len(mastered)} 词)",
-        "| word | pos | exposed | correct | wrong |",
-        "|---|---|---|---|---|",
+        "| word | pos | exposed | correct | wrong | mastery |",
+        "|---|---|---|---|---|---|",
     ]
     for r in mastered:
-        lines.append(f"| {r['word']} | {r['pos']} | {r['exposed_count']} | {r['correct_count']} | {r['wrong_count']} |")
+        lines.append(
+            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
+        )
     lines.append("")
-    lines.append(f"## 正在学习 ({len(learning)} 词)")
-    lines.append("| word | pos | exposed | correct | wrong |")
-    lines.append("|---|---|---|---|---|")
-    for r in learning:
-        lines.append(f"| {r['word']} | {r['pos']} | {r['exposed_count']} | {r['correct_count']} | {r['wrong_count']} |")
+    lines.append(f"## 已使用 ({len(used)} 词)")
+    lines.append("| word | pos | exposed | correct | wrong | mastery |")
+    lines.append("|---|---|---|---|---|---|")
+    for r in used:
+        lines.append(
+            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
+        )
+    lines.append("")
+    lines.append(f"## 未使用 ({len(unused)} 词)")
+    lines.append("| word | pos |")
+    lines.append("|---|---|")
+    for r in unused:
+        lines.append(f"| {r['word']} | {r['pos']} |")
     lines.append("")
     lines.append(f"## 学习困难 ({len(struggling)} 词)")
-    lines.append("| word | pos | exposed | correct | wrong |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| word | pos | exposed | correct | wrong | mastery |")
+    lines.append("|---|---|---|---|---|---|")
     for r in struggling:
-        lines.append(f"| {r['word']} | {r['pos']} | {r['exposed_count']} | {r['correct_count']} | {r['wrong_count']} |")
+        lines.append(
+            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
+        )
     return "\n".join(lines)
 
 

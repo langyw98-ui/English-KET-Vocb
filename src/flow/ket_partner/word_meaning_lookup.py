@@ -13,7 +13,7 @@ class WordMeaning(BaseModel):
 
 
 async def lookup_word_meaning(llm, sentence: str, word: str) -> WordMeaning:
-    structured = llm.with_structured_output(WordMeaning)
+    structured = llm.with_structured_output(WordMeaning, method="function_calling")
     messages = [
         SystemMessage(content=_SYSTEM),
         HumanMessage(content=f"Sentence: {sentence}"),

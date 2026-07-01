@@ -20,7 +20,7 @@ def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_text="The
     if meaning_resp:
         responses[WordMeaning] = meaning_resp
 
-    def structured(schema):
+    def structured(schema, **kwargs):
         bound = MagicMock()
         bound.ainvoke = AsyncMock(return_value=responses.get(schema))
         return bound
@@ -186,7 +186,7 @@ def _mock_llm_seq(
     if meaning_resp:
         responses[WordMeaning] = meaning_resp
 
-    def structured(schema):
+    def structured(schema, **kwargs):
         bound = MagicMock()
         bound.ainvoke = AsyncMock(return_value=responses.get(schema))
         return bound
@@ -412,3 +412,50 @@ async def test_agent_aclose_no_tasks_is_noop(setup):
     # No tasks scheduled — should return quickly without error.
     await agent_instance.aclose()
     assert agent_instance._bg_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_function_word_error_renders_contrast(setup):
+    """Option C: when the kid mistranslates a preposition (e.g. "in" → 上),
+    the AI message must surface a contrast block so the kid learns the
+    difference between confusable prepositions.
+
+    Function words are filtered out of vocab_stats tracking by design
+    (sentence_validator), so this feedback is real-time only — it does
+    not persist into mastery_score / exposed_count.
+    """
+    from flow.ket_partner.translation_evaluator import FunctionWordError
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            wrong_words=[],
+            correct_meanings={},
+            function_word_errors=[
+                FunctionWordError(
+                    word="in",
+                    kid_translation="上",
+                    correct_translation="里",
+                    contrast="in = 里（在……中）, on = 上（在……上面）",
+                ),
+            ],
+        ),
+        sentence_text="The cat is in the box.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "fw"}},
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="猫在盒子上")]},
+        config={"configurable": {"thread_id": "fw"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # The warning block must appear with the contrast explanation.
+    assert "⚠️ 注意介词" in ai_msg, "function_word_errors must produce a warning block"
+    assert "in" in ai_msg
+    assert "里" in ai_msg
+    assert "上" in ai_msg
+    assert "in = 里" in ai_msg or "in=里" in ai_msg, "contrast string must be rendered"

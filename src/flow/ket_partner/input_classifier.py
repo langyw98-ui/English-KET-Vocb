@@ -22,7 +22,7 @@ class IntentClassification(BaseModel):
 
 
 async def classify_intent(llm, last_english_sentence: Optional[str], kid_input: str) -> IntentClassification:
-    structured = llm.with_structured_output(IntentClassification)
+    structured = llm.with_structured_output(IntentClassification, method="function_calling")
     messages = [
         SystemMessage(content=_SYSTEM),
         HumanMessage(content=f"English sentence: {last_english_sentence or '(none)'}"),

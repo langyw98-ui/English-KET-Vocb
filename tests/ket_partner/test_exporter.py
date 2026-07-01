@@ -7,14 +7,18 @@ from flow.ket_partner.exporter import export_learning_report
 
 @pytest.fixture
 async def repos(temp_db_path):
-    csv_text = "word,part_of_speech,topic\ncat,n,Animals\ndog,n,Animals\n"
+    csv_text = "word,part_of_speech,topic\ncat,n,Animals\ndog,n,Animals\nbird,n,Animals\nfish,n,Animals\n"
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
     r = await init_db(temp_db_path, csv_path=csv_path)
-    await r.stats.apply_delta("cat", delta=3, exposed=True)
-    await r.stats.apply_delta("dog", delta=1, exposed=True)
+    await r.stats.apply_delta("cat", delta=3, exposed=True)   # → mastered
+    await r.stats.apply_delta("dog", delta=1, exposed=True)   # → used (learning, not struggling)
+    # fish: exposed 5x, all wrong, mastery stuck at 0 → struggling
+    for _ in range(5):
+        await r.stats.apply_delta("fish", delta=-1, exposed=True)
+    # bird intentionally left with no stats → unused
     yield r
     await r.close()
 
@@ -25,7 +29,13 @@ async def test_export_markdown(repos, tmp_path):
     cfg = load_config()
     result = await export_learning_report(str(out), repos, cfg)
     content = out.read_text(encoding="utf-8")
-    assert "已掌握" in content
+    # 4-table structure with counts in headers.
+    assert "## 已掌握 (1 词)" in content
+    assert "## 已使用 (1 词)" in content
+    assert "## 未使用 (1 词)" in content
+    assert "## 学习困难 (1 词)" in content
+    # Each word lands in its expected table.
     assert "cat" in content
-    assert "正在学习" in content
     assert "dog" in content
+    assert "bird" in content
+    assert "fish" in content

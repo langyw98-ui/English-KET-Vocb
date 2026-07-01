@@ -24,7 +24,7 @@ async def setup(temp_db_path):
 
 def _mock_llm_with_responses(responses: dict):
     llm = MagicMock()
-    def structured(schema):
+    def structured(schema, **kwargs):
         bound = MagicMock()
         bound.ainvoke = AsyncMock(return_value=responses.get(schema))
         return bound

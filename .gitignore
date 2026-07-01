@@ -1,1 +1,6 @@
 .claude/
+.pytest_cache/
+.superpowers/
+__pycache__/
+logs/
+docs/
