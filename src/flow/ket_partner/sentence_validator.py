@@ -36,7 +36,7 @@ def _candidate_roots(token: str) -> list:
     (the, is, cat) are in the KET vocabulary directly. If that doesn't match,
     fall back to: explicit _LEMMAS entries (irregulars like went→go), then
     rule-based suffix stripping (wears→wear, cats→cat). The validator asks
-    `is_ket_word` for each candidate in order — first match wins, which
+    `get_ket_word` for each candidate in order — first match wins, which
     prevents over-stemming (e.g., "bins" → tries "bin" only if "bin" is
     actually a known word).
     """
@@ -91,10 +91,14 @@ async def validate_sentence(sentence: str, repos) -> ValidationResult:
             continue
         # First KET-vocab candidate wins (candidates are ordered most-specific
         # first, so an explicit irregular lemma always beats a rule-based one).
+        # Use canonical form so stats tracking reconciles with target-word
+        # selection (target words come from the CSV with their canonical
+        # casing — e.g. the pronoun "I", not "i").
         ket_root = None
         for c in candidates:
-            if await repos.vocab.is_ket_word(c):
-                ket_root = c
+            canonical = await repos.vocab.get_ket_word(c)
+            if canonical is not None:
+                ket_root = canonical
                 break
         if ket_root is not None:
             words_used.append(ket_root)

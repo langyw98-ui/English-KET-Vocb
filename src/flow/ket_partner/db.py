@@ -85,11 +85,18 @@ class VocabRepo:
             rows = await cur.fetchall()
         return [r[0] for r in rows]
 
-    async def is_ket_word(self, word: str) -> bool:
+    async def get_ket_word(self, word: str) -> Optional[str]:
+        """Case-insensitive lookup. Returns the canonical form stored in the
+        vocab (e.g., 'i' → 'I'), or None if not found. The canonical form
+        must be used by callers when tracking stats so mastery reconciles
+        with target-word selection (which uses canonical form from the CSV).
+        """
         async with self._db.execute(
-            "SELECT 1 FROM ket_vocabulary WHERE word = ?", (word,)
+            "SELECT word FROM ket_vocabulary WHERE word = ? COLLATE NOCASE LIMIT 1",
+            (word,),
         ) as cur:
-            return await cur.fetchone() is not None
+            row = await cur.fetchone()
+            return row[0] if row else None
 
     async def words_in_topic_without_stats(self, topic: str) -> List[str]:
         sql = (

@@ -13,7 +13,7 @@ from flow.ket_partner.graph import route_after_init, route_by_intent
 from flow.ket_partner.input_classifier import IntentClassification, classify_intent
 from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 from flow.ket_partner.profile_summarizer import run_profile_summary
-from flow.ket_partner.sentence_generator import generate_sentence
+from flow.ket_partner.sentence_generator import generate_sentence, rewrite_sentence
 from flow.ket_partner.sentence_validator import validate_sentence
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
@@ -116,14 +116,29 @@ class KETPartnerAgent:
             logger.debug(f"validate_sentence: {result}")
             if result.ok:
                 break
-            sentence = await generate_sentence(
-                self.llm_flash,
-                target=state["target_word"],
-                recent_scaffolding=self._recent_scaffolding[-self.config.variety.recent_window:],
-                age=age,
-                min_words=self.config.sentence.min_words,
-                max_words=self.config.sentence.max_words,
-            )
+            # Targeted rewrite when only a few words fail — much higher hit
+            # rate than a fresh regen. Full regen is reserved for cases where
+            # the sentence is broadly off (many non-KET words).
+            if result.non_ket_words and len(result.non_ket_words) <= self.config.sentence.rewrite_threshold:
+                logger.debug(f"rewrite_sentence: replacing {result.non_ket_words}")
+                sentence = await rewrite_sentence(
+                    self.llm_flash,
+                    original=sentence,
+                    replace_words=result.non_ket_words,
+                    target=state["target_word"],
+                    age=age,
+                    min_words=self.config.sentence.min_words,
+                    max_words=self.config.sentence.max_words,
+                )
+            else:
+                sentence = await generate_sentence(
+                    self.llm_flash,
+                    target=state["target_word"],
+                    recent_scaffolding=self._recent_scaffolding[-self.config.variety.recent_window:],
+                    age=age,
+                    min_words=self.config.sentence.min_words,
+                    max_words=self.config.sentence.max_words,
+                )
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
             # The loop just regenerated `sentence` but never validated it — `result`

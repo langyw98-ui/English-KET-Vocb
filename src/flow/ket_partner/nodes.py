@@ -15,8 +15,13 @@ async def apply_mastery_updates(state: dict, repos: Repos) -> None:
             await repos.stats.apply_delta(target, delta=-1, exposed=False)
     elif intent == "asks_meaning":
         asked = state.get("asked_word")
-        if asked and await repos.vocab.is_ket_word(asked):
-            await repos.stats.apply_delta(asked, delta=-1, exposed=False)
+        if asked:
+            # Use canonical form so the deduction hits the same row that
+            # exposure tracking writes to (e.g., kid asks about "I",
+            # canonical lookup returns "I" — both reads and writes use "I").
+            canonical = await repos.vocab.get_ket_word(asked)
+            if canonical:
+                await repos.stats.apply_delta(canonical, delta=-1, exposed=False)
     # off_topic / non_compliant: no-op
 
 

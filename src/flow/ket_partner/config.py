@@ -13,6 +13,7 @@ class VocabRefillConfig(BaseModel):
 class SentenceConfig(BaseModel):
     min_words: int = 5
     max_words: int = 12
+    rewrite_threshold: int = 2
 
 
 class VarietyConfig(BaseModel):

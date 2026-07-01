@@ -6,7 +6,8 @@
   },
   "sentence": {
     "min_words": 5,
-    "max_words": 12
+    "max_words": 12,
+    "rewrite_threshold": 2
   },
   "variety": {
     "recent_window": 3

@@ -16,8 +16,10 @@ async def repos(temp_db_path):
         "small,adj,\n"
         "happy,adj,\n"
         "is,v,\n"
+        "am,v,\n"
         "are,v,\n"
         "go,v,Action\n"
+        "I,pron,\n"
         "the,det,\n"
         "a,det,\n"
         "on,prep,\n"
@@ -134,3 +136,14 @@ async def test_validate_lemma_overrides_rule_based(repos):
     # 'went' is in lemmas.json → 'go'. Rule-based stripping would give 'wt' or similar.
     r = await validate_sentence("The dog went big.", repos)
     assert "go" in r.words_used, "irregular lemma 'went→go' must take precedence"
+
+
+@pytest.mark.asyncio
+async def test_validate_pronoun_I_case_insensitive(repos):
+    """The pronoun 'I' is stored in KET vocab with its canonical capital
+    spelling. A sentence starting with 'I' must validate, and the canonical
+    form 'I' (not lowercase 'i') must be recorded in words_used so mastery
+    tracking reconciles with target-word selection (which uses canonical form)."""
+    r = await validate_sentence("I am big.", repos)
+    assert r.ok is True, f"'I' must match the vocab row stored as 'I'; got non_ket={r.non_ket_words}"
+    assert "I" in r.words_used, "canonical form 'I' must be recorded, not lowercase 'i'"

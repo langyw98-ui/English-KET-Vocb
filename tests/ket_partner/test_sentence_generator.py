@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_generator import generate_sentence
+from flow.ket_partner.sentence_generator import generate_sentence, rewrite_sentence
 
 
 def _make_llm(return_value: str):
@@ -40,3 +40,62 @@ async def test_generate_sentence_handles_empty_recent():
         max_words=12,
     )
     assert "cat" in result
+
+
+@pytest.mark.asyncio
+async def test_rewrite_sentence_returns_string():
+    llm = _make_llm("The cat sleeps on the warm towel.")
+    result = await rewrite_sentence(
+        llm,
+        original="The cat slept on the warm towel.",
+        replace_words=["slept"],
+        target="towel",
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    assert isinstance(result, str)
+    assert "towel" in result
+
+
+@pytest.mark.asyncio
+async def test_rewrite_sentence_prompt_contains_replace_words():
+    """The system prompt MUST surface the failing words so the LLM knows
+    what to swap. Without this guarantee the rewrite is blind."""
+    llm = _make_llm("The dog runs.")
+    await rewrite_sentence(
+        llm,
+        original="The elephant runs fast.",
+        replace_words=["elephant"],
+        target="runs",
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "elephant" in system_text
+    assert "runs" in system_text  # target preserved
+    assert "The elephant runs fast." in system_text  # original included
+
+
+@pytest.mark.asyncio
+async def test_rewrite_sentence_falls_back_to_original_on_error():
+    """If the LLM call throws, return the original sentence unchanged
+    rather than crashing the generate_sentence_node retry loop."""
+    llm = MagicMock()
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(side_effect=RuntimeError("llm down"))
+    llm.bind = MagicMock(return_value=bound)
+    original = "The cat slept on the towel."
+    result = await rewrite_sentence(
+        llm,
+        original=original,
+        replace_words=["slept"],
+        target="towel",
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    assert result == original
