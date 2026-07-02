@@ -226,3 +226,55 @@ async def test_append_session_start_writes_system_row(temp_db_path):
     assert row is not None
     assert row[0] == "system"
     assert row[1] == "session_start"
+
+
+@pytest.mark.asyncio
+async def test_oldest_learning_word_returns_none_when_empty(temp_db_path):
+    repos = await init_db(temp_db_path, csv_path=None)
+    assert await repos.stats.oldest_learning_word() is None
+
+
+@pytest.mark.asyncio
+async def test_oldest_learning_word_prefers_learning_over_exposed(temp_db_path):
+    """When both pools exist, learning wins — exposed is only the fallback."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    # 'exposed' word with OLDER last_seen_at — must still lose to any 'learning' word
+    await repos.stats.increment_exposed("old_exposed")
+    # Manually backdate its last_seen_at to guarantee it's older
+    await repos.stats._db.execute(
+        "UPDATE vocab_stats SET last_seen_at = '2020-01-01 00:00:00' WHERE word = 'old_exposed'"
+    )
+    await repos.stats.increment_exposed("new_target", is_target=True)  # 'learning'
+    result = await repos.stats.oldest_learning_word()
+    assert result == "new_target"
+
+
+@pytest.mark.asyncio
+async def test_oldest_learning_word_falls_back_to_exposed_when_no_learning(temp_db_path):
+    """Pool dry-up case: all learning words graduated, fall back to oldest
+    exposed — this is the path that promotes a scaffolding word to target."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.stats.increment_exposed("first_exposed")
+    await repos.stats.increment_exposed("second_exposed")
+    # Backdate 'first_exposed' to ensure it's older
+    await repos.stats._db.execute(
+        "UPDATE vocab_stats SET last_seen_at = '2020-01-01 00:00:00' WHERE word = 'first_exposed'"
+    )
+    result = await repos.stats.oldest_learning_word()
+    assert result == "first_exposed"
+
+
+@pytest.mark.asyncio
+async def test_oldest_learning_word_ignores_mastered(temp_db_path):
+    """Mastered words must never be returned as practice targets."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    # Bump mastery to 3 via repeated +1 deltas with is_target=True
+    await repos.stats.apply_delta("mastered_word", delta=1, exposed=True, is_target=True)
+    await repos.stats.apply_delta("mastered_word", delta=1, is_target=True)
+    await repos.stats.apply_delta("mastered_word", delta=1, is_target=True)
+    assert (await repos.stats.get("mastered_word"))["status"] == "mastered"
+    # Exposed word exists but is more recent — should still be returned because
+    # mastered_word is filtered out.
+    await repos.stats.increment_exposed("exposed_word")
+    result = await repos.stats.oldest_learning_word()
+    assert result == "exposed_word"

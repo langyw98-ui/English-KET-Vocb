@@ -230,8 +230,19 @@ class StatsRepo:
         return row[0]
 
     async def oldest_learning_word(self) -> Optional[str]:
+        # Two-tier: target words ('learning') take priority. Only when the
+        # learning pool is dry do we promote the oldest scaffolding-only word
+        # ('exposed') to target — this is the path that lets a previously-passive
+        # word become an active target when the system has nothing else to practice.
         async with self._db.execute(
             "SELECT word FROM vocab_stats WHERE status='learning' "
+            "ORDER BY last_seen_at ASC LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            return row[0]
+        async with self._db.execute(
+            "SELECT word FROM vocab_stats WHERE status='exposed' "
             "ORDER BY last_seen_at ASC LIMIT 1"
         ) as cur:
             row = await cur.fetchone()
