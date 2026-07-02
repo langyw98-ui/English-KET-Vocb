@@ -224,8 +224,14 @@ class KETPartnerAgent:
         # turns do not re-count the prior sentence's words. Set the flag so
         # persist_turn_node knows the increment is already done and skips its
         # own increment.
+        # Mark the target distinctly: its first exposure makes it 'learning'
+        # (active practice target); scaffolding words stay 'exposed' until
+        # they're selected as target in a future turn. Without this flag, all
+        # words would pool into 'exposed' and refill_mode / oldest_learning_word
+        # would treat passive scaffolding as if it were target practice.
+        target = state["target_word"]
         for w in result.words_used:
-            await self.repos.stats.increment_exposed(w)
+            await self.repos.stats.increment_exposed(w, is_target=(w == target))
         # If the accepted sentence still has non-KET words, look up their
         # context meanings so format_output_node can annotate them for the kid.
         annotations: list[dict[str, str]] = []

@@ -1056,3 +1056,52 @@ async def test_naturalness_check_skipped_when_ket_validation_fails(setup, monkey
     assert naturalness_calls["count"] == 0, (
         "check_naturalness must NOT be called when KET validation fails (cost gate)"
     )
+
+
+@pytest.mark.asyncio
+async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monkeypatch):
+    """Target word must end up with status='learning'; scaffolding-only words
+    in the same sentence must end up with status='exposed'. Without the
+    is_target flag, all words would be 'learning' and the refill pool would
+    fill up with passive words — defeating the new design.
+
+    Note: target-word selection uses ORDER BY RANDOM() in production
+    (vocab_selector._pick_new_word → db.words_in_topic_without_stats), so we
+    monkeypatch _pick_new_word to deterministically return 'cat'. The mock
+    sentence "The cat is on the bed." includes both 'cat' (target) and 'bed'
+    (scaffolding) so both branches of the assertion are exercised."""
+    from flow.ket_partner import vocab_selector
+
+    async def fake_pick_new_word(repos, profile):
+        return "cat"
+
+    monkeypatch.setattr(vocab_selector, "_pick_new_word", fake_pick_new_word)
+
+    llm = _mock_llm(
+        intent_resp=None,
+        sentence_text="The cat is on the bed.",
+    )
+    agent = await build_agent(
+        llm_flash=llm,
+        llm_smart=llm,
+        repos=setup,
+        info={"nickname_kid": "t", "age": 8},
+    )
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "target-mark"}},
+    )
+
+    # 'cat' is the target_word (forced by the monkeypatch above).
+    cat = await setup.stats.get("cat")
+    assert cat is not None, "target word must have a stats row"
+    assert cat["status"] == "learning", (
+        f"target word must be 'learning' (got {cat['status']!r})"
+    )
+    # Scaffolding words from the sentence — none of them were the target.
+    for word in ["bed"]:
+        row = await setup.stats.get(word)
+        assert row is not None, f"scaffolding word {word!r} must have a stats row"
+        assert row["status"] == "exposed", (
+            f"scaffolding word {word!r} must be 'exposed' (got {row['status']!r})"
+        )
