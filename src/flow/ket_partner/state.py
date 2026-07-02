@@ -31,3 +31,10 @@ class BTPKetState(TypedDict):
     # this so non-generate turns (asks_meaning/idk/off_topic/non_compliant)
     # do NOT re-increment exposure for the prior sentence's words.
     _exposure_recorded: Optional[bool]
+    # Non-KET-word annotations for the displayed sentence. Populated by
+    # generate_sentence_node when the accepted sentence still contains
+    # ≤1 (or, after retries, more) non-KET words. Format:
+    # [{"word": "sledding", "meaning": "滑雪橇"}, ...]
+    # format_output_text renders each as "<word> 的意思是：<meaning>" after
+    # the sentence so the kid can still translate even with unknown words.
+    non_ket_annotations: Optional[List[Dict[str, str]]]

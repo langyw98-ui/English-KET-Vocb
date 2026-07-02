@@ -13,13 +13,13 @@ from flow.ket_partner.graph import route_after_init, route_by_intent
 from flow.ket_partner.input_classifier import IntentClassification, classify_intent
 from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 from flow.ket_partner.profile_summarizer import run_profile_summary
-from flow.ket_partner.sentence_generator import generate_sentence, rewrite_sentence
+from flow.ket_partner.sentence_generator import generate_sentence
 from flow.ket_partner.sentence_naturalness import check_naturalness
 from flow.ket_partner.sentence_validator import validate_sentence
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
 from flow.ket_partner.vocab_selector import select_target_word
-from flow.ket_partner.word_meaning_lookup import WordMeaning, lookup_sentence_translation, lookup_word_meaning
+from flow.ket_partner.word_meaning_lookup import WordMeaning, lookup_sentence_translation, lookup_word_meaning, lookup_word_meanings
 
 
 class KETPartnerAgent:
@@ -146,6 +146,13 @@ class KETPartnerAgent:
         # sentences). Now: list[list[str]] outer, flattened here.
         avoid_words = [w for sent_words in self._recent_scaffolding[-window:] for w in sent_words]
         avoid_sentences = list(self._recent_sentences[-window:])
+        # Non-KET words encountered across this turn's retry attempts. The
+        # LLM frequently reuses the same non-KET word on every regen (e.g.,
+        # "blocks" when target is "build") because the target naturally
+        # co-occurs with it — burning the retry budget and producing
+        # near-duplicate sentences. Surfacing them as "do not reuse" hints
+        # forces the LLM to pick different scaffolding.
+        seen_non_ket_words: list = []
 
         def _regen(hint: str = ""):
             return generate_sentence(
@@ -157,45 +164,54 @@ class KETPartnerAgent:
                 max_words=self.config.sentence.max_words,
                 avoid_sentences=avoid_sentences,
                 naturalness_hint=hint,
+                avoid_non_ket_words=seen_non_ket_words,
             )
 
         sentence = await _regen()
         result = None
         naturalness_hint = ""
+        # Acceptance policy (per user spec):
+        #   - non-KET count ≤ 1 → ACCEPT (annotate the lone non-KET word)
+        #   - non-KET count > 1 → regen
+        #   - duplicate → regen
+        #   - naturalness fail → regen with hint
+        # After retries exhaust, accept whatever we have and annotate any
+        # remaining non-KET words (1 or many) so the kid can still translate.
         for _ in range(self.config.validate_retry_limit):
             result = await validate_sentence(sentence, self.repos)
             is_duplicate = sentence in self._recent_sentences
+            non_ket_count = len(result.non_ket_words)
             logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
-            if not result.ok or is_duplicate:
-                # KET-word or duplicate failure — same retry routing as before.
-                if is_duplicate:
-                    logger.debug(f"regen: sentence is a duplicate of a recent one")
+            if non_ket_count <= 1 and not is_duplicate:
+                # Cheap gate: either all-KET, or a single tolerable non-KET word.
+                # If there's 1 non-KET word, accept and annotate after the loop.
+                if non_ket_count == 0:
+                    # Only run the expensive naturalness LLM check on sentences
+                    # that fully passed the cheap KET gate — otherwise we'd
+                    # burn budget annotating+judging sentences we'll regen.
+                    naturalness = await check_naturalness(self.llm_smart, sentence, age=age)
+                    logger.debug(f"check_naturalness: ok={naturalness.ok} reason={naturalness.reason!r}")
+                    if naturalness.ok:
+                        break
+                    naturalness_hint = naturalness.reason
                     sentence = await _regen(hint=naturalness_hint)
-                elif result.non_ket_words and len(result.non_ket_words) <= self.config.sentence.rewrite_threshold:
-                    logger.debug(f"rewrite_sentence: replacing {result.non_ket_words}")
-                    sentence = await rewrite_sentence(
-                        self.llm_flash,
-                        original=sentence,
-                        replace_words=result.non_ket_words,
-                        target=state["target_word"],
-                        age=age,
-                        min_words=self.config.sentence.min_words,
-                        max_words=self.config.sentence.max_words,
-                        avoid_sentences=avoid_sentences,
-                    )
-                else:
-                    sentence = await _regen(hint=naturalness_hint)
-                continue
-            # KET + dedup passed — run naturalness check only on candidates
-            # that survived the cheap gates, so we don't burn LLM calls on
-            # sentences that will be regenerated anyway.
-            naturalness = await check_naturalness(self.llm_smart, sentence, age=age)
-            logger.debug(f"check_naturalness: ok={naturalness.ok} reason={naturalness.reason!r}")
-            if naturalness.ok:
+                    continue
+                # non_ket_count == 1: accept as-is, skip naturalness (no point
+                # judging a sentence the policy already chose to annotate).
+                logger.debug(f"accept: 1 non-KET word ({result.non_ket_words[0]}) — will annotate")
                 break
-            # Naturalness failed — regen with the rejection reason fed back so
-            # the LLM can avoid the same kind of nonsense this time.
-            naturalness_hint = naturalness.reason
+            # Either > 1 non-KET, or duplicate. Both warrant a full regen.
+            if is_duplicate:
+                logger.debug(f"regen: sentence is a duplicate of a recent one")
+            else:
+                logger.debug(f"regen: {non_ket_count} non-KET words (>1)")
+            # Accumulate this attempt's non-KET words so the next regen
+            # prompt can list them as off-limits. Applies to both paths —
+            # duplicate sentences often share the same non-KET vocabulary
+            # the LLM keeps reaching for.
+            for w in result.non_ket_words:
+                if w not in seen_non_ket_words:
+                    seen_non_ket_words.append(w)
             sentence = await _regen(hint=naturalness_hint)
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
@@ -210,14 +226,18 @@ class KETPartnerAgent:
         # own increment.
         for w in result.words_used:
             await self.repos.stats.increment_exposed(w)
-        # Fold the pending sentence directly into last_english_sentence
-        # (declared in BTPKetState). The previous `_pending_sentence` hand-off
-        # was undeclared and silently dropped by LangGraph, so the kid was
-        # shown an empty sentence to translate.
+        # If the accepted sentence still has non-KET words, look up their
+        # context meanings so format_output_node can annotate them for the kid.
+        annotations: list[dict[str, str]] = []
+        if result.non_ket_words:
+            annotations = await lookup_word_meanings(
+                self.llm_flash, sentence, result.non_ket_words
+            )
         return {
             "last_sentence_words": result.words_used,
             "last_english_sentence": sentence,
             "_exposure_recorded": True,
+            "non_ket_annotations": annotations,
         }
 
     async def format_output_node(self, state: BTPKetState) -> dict:

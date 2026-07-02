@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_generator import generate_sentence, rewrite_sentence
+from flow.ket_partner.sentence_generator import generate_sentence
 
 
 def _make_llm(return_value: str):
@@ -40,65 +40,6 @@ async def test_generate_sentence_handles_empty_recent():
         max_words=12,
     )
     assert "cat" in result
-
-
-@pytest.mark.asyncio
-async def test_rewrite_sentence_returns_string():
-    llm = _make_llm("The cat sleeps on the warm towel.")
-    result = await rewrite_sentence(
-        llm,
-        original="The cat slept on the warm towel.",
-        replace_words=["slept"],
-        target="towel",
-        age=8,
-        min_words=5,
-        max_words=12,
-    )
-    assert isinstance(result, str)
-    assert "towel" in result
-
-
-@pytest.mark.asyncio
-async def test_rewrite_sentence_prompt_contains_replace_words():
-    """The system prompt MUST surface the failing words so the LLM knows
-    what to swap. Without this guarantee the rewrite is blind."""
-    llm = _make_llm("The dog runs.")
-    await rewrite_sentence(
-        llm,
-        original="The elephant runs fast.",
-        replace_words=["elephant"],
-        target="runs",
-        age=8,
-        min_words=5,
-        max_words=12,
-    )
-    bound = llm.bind.return_value
-    sent_messages = bound.ainvoke.call_args.args[0]
-    system_text = sent_messages[0].content
-    assert "elephant" in system_text
-    assert "runs" in system_text  # target preserved
-    assert "The elephant runs fast." in system_text  # original included
-
-
-@pytest.mark.asyncio
-async def test_rewrite_sentence_falls_back_to_original_on_error():
-    """If the LLM call throws, return the original sentence unchanged
-    rather than crashing the generate_sentence_node retry loop."""
-    llm = MagicMock()
-    bound = MagicMock()
-    bound.ainvoke = AsyncMock(side_effect=RuntimeError("llm down"))
-    llm.bind = MagicMock(return_value=bound)
-    original = "The cat slept on the towel."
-    result = await rewrite_sentence(
-        llm,
-        original=original,
-        replace_words=["slept"],
-        target="towel",
-        age=8,
-        min_words=5,
-        max_words=12,
-    )
-    assert result == original
 
 
 @pytest.mark.asyncio
@@ -142,47 +83,41 @@ async def test_generate_sentence_prompt_shows_none_yet_when_empty():
 
 
 @pytest.mark.asyncio
-async def test_rewrite_sentence_prompt_lists_avoid_sentences():
-    """Rewrite path must also receive prior sentences so it doesn't grind
-    the sentence back to a previously-used one."""
+async def test_generate_sentence_prompt_lists_avoid_non_ket_words():
+    """Regen path: prior non-KET words must surface in the prompt so the LLM
+    knows what to avoid this round. Without this, the LLM keeps producing the
+    same non-KET word on every retry."""
     llm = _make_llm("A fresh new sentence.")
-    await rewrite_sentence(
+    await generate_sentence(
         llm,
-        original="The cat sleeps.",
-        replace_words=["sleeps"],
-        target="cat",
+        target="build",
+        recent_scaffolding=[],
         age=8,
         min_words=5,
         max_words=12,
-        avoid_sentences=["The cat rests."],
+        avoid_non_ket_words=["blocks", "tower"],
     )
     bound = llm.bind.return_value
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
-    assert "The cat rests." in system_text
+    assert "blocks" in system_text
+    assert "tower" in system_text
 
 
 @pytest.mark.asyncio
-async def test_rewrite_sentence_prompt_does_not_lock_to_original_length():
-    """Rewrite must be free to restructure — telling the LLM 'length stays'
-    signaled 'match the original's word count' and forced padding with
-    non-KET filler. The prompt must explicitly allow restructuring as long
-    as the result lands in the configured min-max range.
-    """
+async def test_generate_sentence_prompt_omits_non_ket_block_when_empty():
+    """First attempt (no prior non-KET words): block should not render."""
     llm = _make_llm("A fresh new sentence.")
-    await rewrite_sentence(
+    await generate_sentence(
         llm,
-        original="The cat sleeps on the warm bed.",
-        replace_words=["sleeps"],
         target="cat",
+        recent_scaffolding=[],
         age=8,
         min_words=5,
         max_words=12,
+        avoid_non_ket_words=[],
     )
-    system_text = llm.bind.return_value.ainvoke.call_args.args[0][0].content
-    assert "Length stays" not in system_text, (
-        "prompt must not say 'Length stays' — that signaled 'match original length'"
-    )
-    assert "freely restructure" in system_text.lower(), (
-        "prompt must explicitly permit restructuring"
-    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "non-KET words" not in system_text

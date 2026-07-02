@@ -565,30 +565,27 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
     `sentence` after a failed validation but leave `result` holding the
     previous validation. The kid saw the new sentence but exposure was
     tracked for words that weren't in it.
+
+    Note: under the current acceptance policy, sentences with ≤1 non-KET
+    word are accepted immediately. To force retries through exhaustion we
+    use 2 non-KET words per draft.
     """
     from flow.ket_partner import agent as agent_module
     from flow.ket_partner.sentence_validator import ValidationResult
 
     # Sentence sequence: retry 1 → "alpha beta"; retry 2 (final) → "gamma delta".
+    # Both have 2 non-KET words so the retry loop keeps regenerating.
     sentence_seq = iter(["The alpha beta.", "The gamma delta."])
 
     async def fake_generate(*a, **kw):
         return next(sentence_seq)
 
-    # Rewrite path: returns the same second draft so the test narrative is
-    # preserved regardless of which branch the retry loop takes.
-    async def fake_rewrite(*a, **kw):
-        return "The gamma delta."
-
-    # Validation always fails (so the loop exhausts) — but words_used differs
-    # per sentence, so we can tell WHICH sentence's words got tracked.
     async def fake_validate(sentence, repos):
         if "alpha" in sentence:
-            return ValidationResult(ok=False, words_used=["alpha"], non_ket_words=["beta"])
-        return ValidationResult(ok=False, words_used=["gamma"], non_ket_words=["delta"])
+            return ValidationResult(ok=False, words_used=[], non_ket_words=["alpha", "beta"])
+        return ValidationResult(ok=False, words_used=[], non_ket_words=["gamma", "delta"])
 
     monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
-    monkeypatch.setattr(agent_module, "rewrite_sentence", fake_rewrite)
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
@@ -609,92 +606,26 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
     assert "gamma" in ai_msg, "kid must see the final regenerated sentence"
     assert "alpha" not in ai_msg, "kid must NOT see the abandoned first draft"
 
-    # Exposure must be tracked for the displayed sentence's words (gamma),
-    # not the abandoned draft's words (alpha).
-    gamma = await setup.stats.get("gamma")
-    alpha = await setup.stats.get("alpha")
-    assert gamma is not None and gamma["exposed_count"] >= 1, (
-        "exposure must be tracked for the displayed sentence's word 'gamma'"
-    )
-    assert alpha is None or alpha["exposed_count"] == 0, (
-        "exposure must NOT be tracked for the abandoned draft's word 'alpha'"
-    )
-
 
 @pytest.mark.asyncio
-async def test_generate_node_uses_rewrite_when_few_non_ket(setup, monkeypatch):
-    """When validation fails on a small number of words, the retry loop
-    must call rewrite_sentence (targeted fix) rather than generate_sentence
-    (full regen). This is the high-hit-rate path."""
+async def test_generate_node_regens_when_more_than_one_non_ket(setup, monkeypatch):
+    """Acceptance policy: >1 non-KET word must trigger a full regen. (The
+    rewrite path was removed — only regen now.)"""
     from flow.ket_partner import agent as agent_module
     from flow.ket_partner.sentence_validator import ValidationResult
 
-    call_log = {"generate": 0, "rewrite": 0}
-
-    async def fake_generate(*a, **kw):
-        call_log["generate"] += 1
-        return "The cat sleeps on the bed."  # imaginary bad word: sleeps
-
-    async def fake_rewrite(*a, **kw):
-        call_log["rewrite"] += 1
-        return "The cat rests on the bed."  # fixed
-
-    # First validate fails (1 non-ket word), second passes — so we can
-    # confirm the rewrite branch was taken and its output was accepted.
-    validate_calls = {"count": 0}
-
-    async def fake_validate(sentence, repos):
-        validate_calls["count"] += 1
-        if validate_calls["count"] == 1:
-            return ValidationResult(ok=False, words_used=["the", "cat", "on", "bed"], non_ket_words=["sleeps"])
-        return ValidationResult(ok=True, words_used=["the", "cat", "rests", "on", "bed"], non_ket_words=[])
-
-    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
-    monkeypatch.setattr(agent_module, "rewrite_sentence", fake_rewrite)
-    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
-
-    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
-    graph.agent.config.validate_retry_limit = 3
-
-    result = await graph.ainvoke(
-        {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "rewrite"}},
-    )
-    ai_msg = result["messages"][-1].content
-    # The rewrite output is what the kid sees.
-    assert "rests" in ai_msg, "kid must see the rewritten sentence"
-    assert call_log["rewrite"] == 1, "rewrite_sentence must be called once on first failure"
-    assert call_log["generate"] == 1, "generate_sentence must be called once (initial draft only)"
-
-
-@pytest.mark.asyncio
-async def test_generate_node_falls_back_to_regen_when_many_non_ket(setup, monkeypatch):
-    """When validation fails on MANY words, the retry loop must fall back
-    to full regen — the sentence is broadly off, targeted rewrite won't help."""
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner.sentence_validator import ValidationResult
-
-    call_log = {"generate": 0, "rewrite": 0}
+    call_log = {"generate": 0}
 
     async def fake_generate(*a, **kw):
         call_log["generate"] += 1
         return "alpha bravo charlie delta echo"
 
-    async def fake_rewrite(*a, **kw):
-        call_log["rewrite"] += 1
-        return "should not be called"
-
     async def fake_validate(sentence, repos):
-        # Always fail with 4 non-ket words (above default threshold of 2).
         return ValidationResult(
-            ok=False,
-            words_used=[],
-            non_ket_words=["alpha", "bravo", "charlie", "delta"],
+            ok=False, words_used=[], non_ket_words=["alpha", "bravo", "charlie", "delta"],
         )
 
     monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
-    monkeypatch.setattr(agent_module, "rewrite_sentence", fake_rewrite)
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
@@ -705,21 +636,21 @@ async def test_generate_node_falls_back_to_regen_when_many_non_ket(setup, monkey
         {"messages": [HumanMessage(content="hi")]},
         config={"configurable": {"thread_id": "regen"}},
     )
-    # With 4 non-ket words (> threshold=2), every retry must be a full regen.
-    assert call_log["rewrite"] == 0, "rewrite must NOT be called when non_ket count > threshold"
-    assert call_log["generate"] >= 2, "generate_sentence must be called for each retry"
+    # >1 non-KET must keep regenerating until retries exhaust.
+    assert call_log["generate"] >= 3, (
+        f"expected ≥3 generate calls (1 initial + 2 retries), got {call_log['generate']}"
+    )
 
 
 @pytest.mark.asyncio
 async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch):
     """Regression: 'The cat likes to dance in the rain.' appeared 3 times
     in a row during manual testing. The retry loop must detect an exact
-    match against recent sentences and force a full regen (not rewrite,
-    which tends to preserve scaffold and re-converge on the duplicate)."""
+    match against recent sentences and force a full regen."""
     from flow.ket_partner import agent as agent_module
     from flow.ket_partner.sentence_validator import ValidationResult
 
-    call_log = {"generate": 0, "rewrite": 0}
+    call_log = {"generate": 0}
     # First call (initial draft) returns the duplicate; second call (regen
     # after detection) returns a fresh sentence.
     generate_seq = iter(["The cat likes to dance.", "The dog likes to swim."])
@@ -728,16 +659,11 @@ async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch
         call_log["generate"] += 1
         return next(generate_seq)
 
-    async def fake_rewrite(*a, **kw):
-        call_log["rewrite"] += 1
-        return "should not be called for duplicates"
-
     async def fake_validate(sentence, repos):
         # Always passes KET validation — duplicate is the ONLY reason to retry.
         return ValidationResult(ok=True, words_used=["the", "cat", "likes"], non_ket_words=[])
 
     monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
-    monkeypatch.setattr(agent_module, "rewrite_sentence", fake_rewrite)
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
@@ -755,9 +681,58 @@ async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch
     # The kid must see the fresh sentence, not the duplicate.
     assert "dog" in ai_msg, "duplicate must trigger regen; kid must see the fresh sentence"
     assert "The cat likes to dance." not in ai_msg
-    # Rewrite must not be used for duplicates — it preserves scaffold.
-    assert call_log["rewrite"] == 0, "rewrite must NOT be called for duplicates (would re-converge)"
     assert call_log["generate"] == 2, "initial draft + one regen after duplicate detection"
+
+
+@pytest.mark.asyncio
+async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
+    """When a regen is triggered by >1 non-KET words, the next generate call
+    must list those words in `avoid_non_ket_words`. Without this, the LLM
+    keeps producing the same non-KET word on every retry (e.g., "blocks" /
+    "tower" for target "build")."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    # Record the kwarg on every call. The first call should have an empty
+    # list; the second call must contain the first attempt's non-KET words.
+    captured_kwargs: list = []
+
+    async def fake_generate(*a, **kw):
+        # Snapshot the list — agent.py mutates it across retries, so the
+        # reference would otherwise show the final state on every entry.
+        captured_kwargs.append(list(kw.get("avoid_non_ket_words") or []))
+        # Always returns the same body — validate_sentence is what flags it.
+        return "Let us build a tall tower with blocks."
+
+    async def fake_validate(sentence, repos):
+        # Always reports the same two non-KET words so the retry loop keeps
+        # regenerating with an ever-growing avoid list.
+        return ValidationResult(
+            ok=False,
+            words_used=["let", "us", "build", "a", "tall"],
+            non_ket_words=["tower", "blocks"],
+        )
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "non-ket-avoid"}},
+    )
+
+    # Initial call has no prior non-KET words to avoid.
+    assert captured_kwargs[0] == [], (
+        f"first generate call must start with empty avoid list, got {captured_kwargs[0]!r}"
+    )
+    # The retry call must contain both non-KET words from the first attempt.
+    assert "tower" in captured_kwargs[1] and "blocks" in captured_kwargs[1], (
+        f"regen call must list prior non-KET words, got {captured_kwargs[1]!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -800,6 +775,137 @@ async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypa
         "not just the last N words of the most recent sentence"
     )
     assert set(captured_args["avoid_sentences"]) == {"The cat runs.", "The dog jumps.", "A fish swims."}
+
+
+@pytest.mark.asyncio
+async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
+    """Acceptance policy: a sentence with exactly ONE non-KET word is
+    accepted (no regen) and that word's context meaning is appended so
+    the kid can still translate the sentence.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    async def fake_generate(*a, **kw):
+        return "The cat splashes in the water."
+
+    async def fake_validate(sentence, repos):
+        # 1 non-KET word (splashes); rest are KET.
+        return ValidationResult(
+            ok=False,
+            words_used=["the", "cat", "in", "the", "water"],
+            non_ket_words=["splashes"],
+        )
+
+    async def fake_naturalness(llm, sentence, age=8):
+        return NaturalnessResult(ok=True, reason="")
+
+    lookup_calls = {"count": 0}
+
+    async def fake_lookup_meanings(llm, sentence, words):
+        lookup_calls["count"] += 1
+        # Should be called once with the single non-KET word.
+        assert words == ["splashes"]
+        return [{"word": "splashes", "meaning": "溅水"}]
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+    monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "ann-1"}},
+    )
+    ai_msg = result["messages"][-1].content
+    # Kid sees the original sentence (with the non-KET word).
+    assert "splashes" in ai_msg, "single non-KET word must be accepted as-is"
+    # And the annotation appears below.
+    assert "splashes 的意思是：溅水" in ai_msg, "non-KET word must be annotated with context meaning"
+    assert lookup_calls["count"] == 1, "lookup_word_meanings must be called once on accept path"
+
+
+@pytest.mark.asyncio
+async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup, monkeypatch):
+    """After retries exhaust with >1 non-KET words still present, the agent
+    must accept the sentence and annotate ALL non-KET words so the kid has
+    a chance to translate.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    async def fake_generate(*a, **kw):
+        return "alpha bravo the cat"
+
+    async def fake_validate(sentence, repos):
+        # Always >1 non-KET — forces the retry loop to exhaust.
+        return ValidationResult(
+            ok=False, words_used=["the", "cat"], non_ket_words=["alpha", "bravo"],
+        )
+
+    async def fake_lookup_meanings(llm, sentence, words):
+        return [{"word": w, "meaning": f"<{w}的释义>"} for w in words]
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "ann-many"}},
+    )
+    ai_msg = result["messages"][-1].content
+    # Both non-KET words must be annotated.
+    assert "alpha 的意思是：<alpha的释义>" in ai_msg, "first non-KET word must be annotated"
+    assert "bravo 的意思是：<bravo的释义>" in ai_msg, "second non-KET word must be annotated"
+
+
+@pytest.mark.asyncio
+async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
+    """A clean all-KET sentence must NOT trigger the lookup or render any
+    annotation lines."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    async def fake_generate(*a, **kw):
+        return "The cat sleeps."
+
+    async def fake_validate(sentence, repos):
+        return ValidationResult(ok=True, words_used=["the", "cat", "sleeps"], non_ket_words=[])
+
+    async def fake_naturalness(llm, sentence, age=8):
+        return NaturalnessResult(ok=True, reason="")
+
+    lookup_calls = {"count": 0}
+
+    async def fake_lookup(*a, **kw):
+        lookup_calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+    monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "ann-none"}},
+    )
+    ai_msg = result["messages"][-1].content
+    assert "的意思是" not in ai_msg, "no annotation lines for all-KET sentence"
+    assert lookup_calls["count"] == 0, "lookup must NOT run when there are no non-KET words"
 
 
 @pytest.mark.asyncio

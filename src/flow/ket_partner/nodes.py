@@ -53,4 +53,12 @@ def format_output_text(state: dict, new_sentence: str) -> str:
 
     lines.append("请把这句译成中文:")
     lines.append(f'"{new_sentence}"')
+    # If generate_sentence_node accepted a sentence with non-KET words,
+    # annotate them so the kid can still translate. Skipped on non-generate
+    # turns where annotations is None.
+    for ann in state.get("non_ket_annotations") or []:
+        word = ann.get("word", "?")
+        meaning = ann.get("meaning", "")
+        if meaning:
+            lines.append(f"{word} 的意思是：{meaning}")
     return "\n".join(lines)

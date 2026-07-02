@@ -14,13 +14,18 @@ Constraints:
 - Must be NATURAL and make real-world sense. Subject-verb-object must reflect how things actually behave. No nonsense like "ice cream makes my nose move" or "the book sings".
 - Playful or imaginative situations are fine, but only if internally coherent.
 - NO emoji, NO Chinese.
-{hint_block}
+{non_ket_block}{hint_block}
 Output: just the English sentence, nothing else.
 """
 
 _HINT_BLOCK = """
 Previous attempt rejected by naturalness check: {hint}
 Avoid that specific issue this time.
+"""
+
+_NON_KET_BLOCK = """
+Previous attempt(s) used these non-KET words — do NOT use them again, pick KET alternatives instead:
+{words}
 """
 
 
@@ -33,10 +38,13 @@ async def generate_sentence(
     max_words: int,
     avoid_sentences: list = None,
     naturalness_hint: str = "",
+    avoid_non_ket_words: list = None,
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
+    avoid_non_ket_words = avoid_non_ket_words or []
     hint_block = _HINT_BLOCK.format(hint=naturalness_hint) if naturalness_hint else ""
+    non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
@@ -45,6 +53,7 @@ async def generate_sentence(
         recent=", ".join(recent_scaffolding) or "(none yet)",
         avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
         hint_block=hint_block,
+        non_ket_block=non_ket_block,
     )
     messages = [
         SystemMessage(content=system_text),
@@ -58,59 +67,3 @@ async def generate_sentence(
     except Exception as e:
         logger.warning(f"generate_sentence failed: {e}")
         return f"I see a {target}."  # 兜底
-
-
-_REWRITE_SYSTEM = """You revise ONE English sentence for a {age}-year-old Chinese kid.
-
-Your job: replace ONLY these words: {replace}.
-- Keep the target word "{target}" in the sentence.
-- Replace each listed word with a KET-vocabulary alternative that fits the context.
-- The result must NOT equal any of these recent sentences (change wording if needed): {avoid}
-- Result MUST be {min_words}-{max_words} words total. You may freely restructure, add, or remove words to hit this range — the result does NOT need to match the original sentence's length or structure.
-- NO emoji, NO Chinese.
-
-Original sentence: {original}
-
-Output: just the revised English sentence, nothing else.
-"""
-
-
-async def rewrite_sentence(
-    llm,
-    original: str,
-    replace_words: list,
-    target: str,
-    age: int,
-    min_words: int,
-    max_words: int,
-    avoid_sentences: list = None,
-) -> str:
-    """Targeted rewrite: ask the LLM to swap specific non-KET words while
-    preserving the rest of the sentence. Used when validation fails on a
-    small number of words — far higher hit-rate than a fresh regen.
-    """
-    creative = llm.bind(temperature=0.6)
-    avoid_sentences = avoid_sentences or []
-    replace_str = ", ".join(replace_words)
-    system_text = _REWRITE_SYSTEM.format(
-        age=age,
-        replace=replace_str,
-        target=target,
-        min_words=min_words,
-        max_words=max_words,
-        original=original,
-        avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
-    )
-    messages = [
-        SystemMessage(content=system_text),
-        HumanMessage(content=f"Replace these words: {replace_str}."),
-    ]
-    logger.debug(f"rewrite_sentence: {messages}")
-    try:
-        response = await creative.ainvoke(messages)
-        revised = response.content.strip()
-        logger.debug(f"rewrite_sentence: {revised}")
-        return revised
-    except Exception as e:
-        logger.warning(f"rewrite_sentence failed: {e}")
-        return original
