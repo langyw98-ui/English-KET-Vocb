@@ -1,7 +1,40 @@
 import sqlite3
 import pytest
 
-from flow.ket_partner.db import init_db, VocabRepo, StatsRepo, ProfileRepo, LogRepo
+from flow.ket_partner.db import _derive_status, init_db, VocabRepo, StatsRepo, ProfileRepo, LogRepo
+
+
+def test_derive_status_mastered_at_score_3():
+    assert _derive_status("learning", 3) == "mastered"
+    assert _derive_status("exposed", 3) == "mastered"
+    assert _derive_status("mastered", 5) == "mastered"
+
+
+def test_derive_status_mastered_sticky_at_score_2():
+    """宽容 policy: 3→2 absorbed, stays mastered."""
+    assert _derive_status("mastered", 2) == "mastered"
+
+
+def test_derive_status_mastered_demotes_at_score_1_or_below():
+    assert _derive_status("mastered", 1) == "learning"
+    assert _derive_status("mastered", 0) == "learning"
+
+
+def test_derive_status_is_target_promotes_to_learning():
+    assert _derive_status("exposed", 0, is_target=True) == "learning"
+    assert _derive_status("exposed", 2, is_target=True) == "learning"
+    assert _derive_status(None, 0, is_target=True) == "learning"  # new row INSERT
+
+
+def test_derive_status_new_row_not_target_is_exposed():
+    assert _derive_status(None, 0) == "exposed"
+
+
+def test_derive_status_preserves_exposed_and_learning():
+    assert _derive_status("exposed", 1) == "exposed"
+    assert _derive_status("exposed", 2) == "exposed"
+    assert _derive_status("learning", 1) == "learning"
+    assert _derive_status("learning", 2) == "learning"
 
 
 @pytest.mark.asyncio
@@ -59,7 +92,8 @@ async def test_stats_repo_apply_delta_creates_row(temp_db_path):
     stats = await repos.stats.get("cat")
     assert stats["mastery_score"] == 1
     assert stats["exposed_count"] == 1
-    assert stats["status"] == "learning"
+    # No is_target → not a target word → 'exposed' (passive exposure with a correct answer)
+    assert stats["status"] == "exposed"
 
 
 @pytest.mark.asyncio
@@ -73,16 +107,25 @@ async def test_stats_repo_apply_delta_floor_at_zero(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_status_transitions(temp_db_path):
+    """A scaffolding-only word: stays 'exposed' below mastery 3, graduates
+    to 'mastered' at 3, demotes to 'learning' only at mastery <= 1."""
     repos = await init_db(temp_db_path, csv_path=None)
+    # delta=1 exposed=True, no is_target → 'exposed' (passive + correct)
     await repos.stats.apply_delta("cat", delta=1, exposed=True)
-    assert (await repos.stats.get("cat"))["status"] == "learning"
+    assert (await repos.stats.get("cat"))["status"] == "exposed"
     await repos.stats.apply_delta("cat", delta=1)
     assert (await repos.stats.get("cat"))["mastery_score"] == 2
+    assert (await repos.stats.get("cat"))["status"] == "exposed"
     await repos.stats.apply_delta("cat", delta=1)
     assert (await repos.stats.get("cat"))["status"] == "mastered"
+    # 3→2: 宽容, stays mastered
+    await repos.stats.apply_delta("cat", delta=-1)
+    assert (await repos.stats.get("cat"))["status"] == "mastered"
+    assert (await repos.stats.get("cat"))["mastery_score"] == 2
+    # 2→1: demote to learning (was mastered, regardless of target history)
     await repos.stats.apply_delta("cat", delta=-1)
     assert (await repos.stats.get("cat"))["status"] == "learning"
-    assert (await repos.stats.get("cat"))["mastery_score"] == 2
+    assert (await repos.stats.get("cat"))["mastery_score"] == 1
 
 
 @pytest.mark.asyncio

@@ -65,12 +65,27 @@ CREATE TABLE IF NOT EXISTS kid_profile (
 """
 
 
-def _derive_status(exposed_count: int, mastery_score: int) -> str:
-    if exposed_count == 0:
-        return "new"
+def _derive_status(
+    current_status: Optional[str],
+    mastery_score: int,
+    is_target: bool = False,
+) -> str:
+    """Derive vocab_stats.status from inputs.
+
+    'exposed':  passive exposure only, never been target, mastery < 3
+    'learning': has been target OR demoted from mastered, mastery < 3
+    'mastered': mastery_score >= 3 (sticky at 2, demotes only at <= 1)
+    """
     if mastery_score >= 3:
         return "mastered"
-    return "learning"
+    if current_status == "mastered":
+        # 宽容 decay: 3→2 absorbed, demote only at <=1
+        return "learning" if mastery_score <= 1 else "mastered"
+    if is_target:
+        return "learning"
+    if current_status is None:
+        return "exposed"
+    return current_status
 
 
 class VocabRepo:
@@ -162,7 +177,9 @@ class StatsRepo:
             "last_seen_at": row[7],
         }
 
-    async def apply_delta(self, word: str, delta: int, exposed: bool = False) -> dict:
+    async def apply_delta(
+        self, word: str, delta: int, exposed: bool = False, is_target: bool = False
+    ) -> dict:
         existing = await self.get(word)
         now = datetime.utcnow()
         if existing is None:
@@ -178,7 +195,7 @@ class StatsRepo:
                     1 if delta > 0 else 0,
                     1 if delta < 0 else 0,
                     score,
-                    _derive_status(1 if exposed else 0, score),
+                    _derive_status(None, score, is_target=is_target),
                     now,
                     now,
                 ),
@@ -197,7 +214,7 @@ class StatsRepo:
                     new_correct,
                     new_wrong,
                     new_score,
-                    _derive_status(new_exposed, new_score),
+                    _derive_status(existing["status"], new_score, is_target=is_target),
                     now,
                     word,
                 ),
@@ -220,10 +237,10 @@ class StatsRepo:
             row = await cur.fetchone()
         return row[0] if row else None
 
-    async def increment_exposed(self, word: str) -> None:
+    async def increment_exposed(self, word: str, is_target: bool = False) -> None:
         existing = await self.get(word)
         if existing is None:
-            await self.apply_delta(word, delta=0, exposed=True)
+            await self.apply_delta(word, delta=0, exposed=True, is_target=is_target)
         else:
             now = datetime.utcnow()
             new_exposed = existing["exposed_count"] + 1
@@ -232,7 +249,7 @@ class StatsRepo:
                 "WHERE word=?",
                 (
                     new_exposed,
-                    _derive_status(new_exposed, existing["mastery_score"]),
+                    _derive_status(existing["status"], existing["mastery_score"], is_target=is_target),
                     now,
                     word,
                 ),

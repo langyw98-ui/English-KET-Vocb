@@ -41,10 +41,13 @@ async def test_select_new_word_when_refill_and_interval_met(repos):
 @pytest.mark.asyncio
 async def test_select_practice_word_when_not_refill(repos):
     cfg = load_config()
-    await repos.stats.apply_delta("cat", delta=1, exposed=True)
-    await repos.stats.apply_delta("dog", delta=1, exposed=True)
-    await repos.stats.apply_delta("apple", delta=1, exposed=True)
-    await repos.stats.apply_delta("cat", delta=1)
+    # is_target=True so each word is a real target word (status='learning'),
+    # not passively-exposed scaffolding (which would be 'exposed' and thus
+    # invisible to learning_count / oldest_learning_word under the new rule).
+    await repos.stats.apply_delta("cat", delta=1, exposed=True, is_target=True)
+    await repos.stats.apply_delta("dog", delta=1, exposed=True, is_target=True)
+    await repos.stats.apply_delta("apple", delta=1, exposed=True, is_target=True)
+    await repos.stats.apply_delta("cat", delta=1, is_target=True)
     profile = await repos.profile.get()
     profile["in_refill_mode"] = 0
     word = await select_target_word(repos, profile, cfg)
