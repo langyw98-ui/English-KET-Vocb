@@ -1105,3 +1105,75 @@ async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monke
         assert row["status"] == "exposed", (
             f"scaffolding word {word!r} must be 'exposed' (got {row['status']!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (exposed-status plan): mastered decay + passive graduation +
+# learning_count exclusion. These tests lock in the design's load-bearing
+# claims end-to-end through apply_delta — the same API nodes.apply_mastery_updates
+# uses. No production code changes; these verify existing behavior.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mastered_word_absorbs_one_wrong_answer(setup):
+    """宽容 policy: mastery 3→2 keeps 'mastered' status. Single mistake
+    must not flapping the word back to 'learning'."""
+    repos = setup
+    # Drive 'cat' to mastery=3 via target exposure + 2 correct deltas
+    await repos.stats.apply_delta("cat", delta=1, exposed=True, is_target=True)
+    await repos.stats.apply_delta("cat", delta=1, is_target=True)
+    await repos.stats.apply_delta("cat", delta=1, is_target=True)
+    assert (await repos.stats.get("cat"))["status"] == "mastered"
+
+    # One wrong answer drops mastery to 2 — status must stay mastered
+    await repos.stats.apply_delta("cat", delta=-1)
+    cat = await repos.stats.get("cat")
+    assert cat["mastery_score"] == 2
+    assert cat["status"] == "mastered"
+
+
+@pytest.mark.asyncio
+async def test_mastered_word_demotes_after_two_consecutive_wrong(setup):
+    """3→2 (absorbed) → 1 demotes to 'learning'. Per spec: 连续答错掉到1."""
+    repos = setup
+    await repos.stats.apply_delta("cat", delta=1, exposed=True, is_target=True)
+    await repos.stats.apply_delta("cat", delta=1, is_target=True)
+    await repos.stats.apply_delta("cat", delta=1, is_target=True)
+    await repos.stats.apply_delta("cat", delta=-1)  # 3→2, stays mastered
+    await repos.stats.apply_delta("cat", delta=-1)  # 2→1, demotes
+    cat = await repos.stats.get("cat")
+    assert cat["mastery_score"] == 1
+    assert cat["status"] == "learning"
+
+
+@pytest.mark.asyncio
+async def test_passive_exposed_word_can_graduate_to_mastered(setup):
+    """A word that has never been target can still reach 'mastered' via
+    correct translations during other target practices. This is the user's
+    '不耽误被动曝光的词自然达到掌握' goal."""
+    repos = setup
+    # 'cat' appears as scaffolding 3 times, kid translates correctly each time
+    await repos.stats.apply_delta("cat", delta=1, exposed=True)  # exposed + correct
+    assert (await repos.stats.get("cat"))["status"] == "exposed"
+    await repos.stats.apply_delta("cat", delta=1)
+    assert (await repos.stats.get("cat"))["status"] == "exposed"
+    await repos.stats.apply_delta("cat", delta=1)
+    # mastery hits 3 → graduates to 'mastered' regardless of target history
+    assert (await repos.stats.get("cat"))["status"] == "mastered"
+
+
+@pytest.mark.asyncio
+async def test_learning_count_excludes_exposed_words(setup):
+    """Refill-mode counting must skip 'exposed' words — only target-exposed
+    words count toward the learning pool. This is the core fix that prevents
+    scaffolding from prematurely triggering high_watermark."""
+    repos = setup
+    # 3 scaffolding-only exposures
+    await repos.stats.increment_exposed("alpha")
+    await repos.stats.increment_exposed("bravo")
+    await repos.stats.increment_exposed("charlie")
+    # 1 target exposure
+    await repos.stats.increment_exposed("target_word", is_target=True)
+    # learning_count must count only the target word
+    assert await repos.stats.learning_count() == 1
