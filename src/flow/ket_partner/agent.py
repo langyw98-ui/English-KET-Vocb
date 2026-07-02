@@ -149,7 +149,7 @@ class KETPartnerAgent:
 
         def _regen(hint: str = ""):
             return generate_sentence(
-                self.llm_flash,
+                self.llm_smart,
                 target=state["target_word"],
                 recent_scaffolding=avoid_words,
                 age=age,
@@ -189,7 +189,7 @@ class KETPartnerAgent:
             # KET + dedup passed — run naturalness check only on candidates
             # that survived the cheap gates, so we don't burn LLM calls on
             # sentences that will be regenerated anyway.
-            naturalness = await check_naturalness(self.llm_flash, sentence, age=age)
+            naturalness = await check_naturalness(self.llm_smart, sentence, age=age)
             logger.debug(f"check_naturalness: ok={naturalness.ok} reason={naturalness.reason!r}")
             if naturalness.ok:
                 break

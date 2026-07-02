@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_naturalness import NaturalnessResult, check_naturalness
+from flow.ket_partner.sentence_naturalness import NaturalnessResult, _SYSTEM, check_naturalness
 
 
 def _make_llm(return_value: NaturalnessResult):
@@ -39,3 +39,18 @@ async def test_check_naturalness_fails_open_on_error():
     # Fail-open: judge LLM errors must NOT force extra retries on a non-issue.
     assert result.ok is True
     assert result.reason == ""
+
+
+def test_prompt_covers_three_naturalness_categories():
+    """Lock in coverage of the three observed-in-production naturalness
+    failure modes so a future prompt refactor can't silently drop one:
+
+    1. Subject-verb-object impossibility ("ice cream makes my nose move").
+    2. Semantic redundancy / tautology ("wet water", "cold ice").
+    3. Collocation errors ("moves the water off its hair").
+
+    Each was a real production miss that prompted a prompt expansion.
+    """
+    assert "ice cream does not make noses move" in _SYSTEM, "category 1 (impossibility) example must be present"
+    assert "wet water" in _SYSTEM, "category 2 (redundancy) example must be present"
+    assert "Collocation" in _SYSTEM or "collocation" in _SYSTEM, "category 3 (collocation) must be named"

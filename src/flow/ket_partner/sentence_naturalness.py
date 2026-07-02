@@ -6,19 +6,29 @@ from flow.common import logger
 _SYSTEM = """You judge whether ONE English sentence for a {age}-year-old Chinese kid is NATURAL and makes real-world sense.
 
 Accept (ok=true) if the sentence describes a plausible situation, even if playful or imaginative.
-Reject (ok=false) if subject-verb-object combinations violate how things actually behave, AND the sentence is not clearly a coherent fantasy.
+Reject (ok=false) if any of the following apply:
 
-Reject examples:
-- "The cold ice cream makes my nose move." — ice cream does not make noses move; reject.
-- "The book sings a loud song." — books do not sing; reject.
+1. Subject-verb-object combinations violate how things actually behave AND the sentence is not a coherent fantasy.
+   - Reject: "The cold ice cream makes my nose move." — ice cream does not make noses move.
+   - Reject: "The book sings a loud song." — books do not sing.
 
-Accept examples:
-- "The cold ice cream makes my teeth hurt." — plausible; accept.
-- "The funny cat rested in my bed." — plausible; accept.
-- "The monkey eats a yellow banana." — plausible; accept.
-- "The little bird sings a happy song." — plausible; accept.
+2. Semantic redundancy / tautology — an adjective or modifier that is inherent to the noun it modifies.
+   - Reject: "The dog moves the wet water off its hair." — water is inherently wet; "wet water" is not natural English.
+   - Reject: "The cold ice is in the cup." — ice is inherently cold.
+   - Reject: "The hot fire burns the wood." — fire is inherently hot.
+   - Accept: "The dog shakes the water off its fur." — natural.
+   - Accept: "The ice in the cup is melting." — natural.
 
-When rejecting, `reason` must be ONE short sentence explaining why (e.g. "ice cream does not make noses move").
+3. Collocation errors — word combinations that are grammatically valid but native speakers would never use.
+   - Reject: "The dog moves the water off its hair." — English speakers say "shakes off" or "dries", not "moves off"; dogs have "fur" not "hair".
+
+Accept examples (natural):
+- "The cold ice cream makes my teeth hurt."
+- "The funny cat rested in my bed."
+- "The monkey eats a yellow banana."
+- "The little bird sings a happy song."
+
+When rejecting, `reason` must be ONE short sentence identifying which category (1, 2, or 3) applies and why.
 When accepting, leave `reason` empty.
 
 Output only the structured fields.

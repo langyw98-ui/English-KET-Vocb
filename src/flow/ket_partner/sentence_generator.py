@@ -63,12 +63,10 @@ async def generate_sentence(
 _REWRITE_SYSTEM = """You revise ONE English sentence for a {age}-year-old Chinese kid.
 
 Your job: replace ONLY these words: {replace}.
-- Keep the original meaning and sentence structure as much as possible.
 - Keep the target word "{target}" in the sentence.
 - Replace each listed word with a KET-vocabulary alternative that fits the context.
-- Do NOT touch any other word.
 - The result must NOT equal any of these recent sentences (change wording if needed): {avoid}
-- Length stays {min_words}-{max_words} words.
+- Result MUST be {min_words}-{max_words} words total. You may freely restructure, add, or remove words to hit this range — the result does NOT need to match the original sentence's length or structure.
 - NO emoji, NO Chinese.
 
 Original sentence: {original}
