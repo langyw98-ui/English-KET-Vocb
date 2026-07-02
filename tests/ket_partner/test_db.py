@@ -129,6 +129,48 @@ async def test_status_transitions(temp_db_path):
 
 
 @pytest.mark.asyncio
+async def test_increment_exposed_creates_exposed_row_for_scaffolding(temp_db_path):
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.stats.increment_exposed("cat")
+    stats = await repos.stats.get("cat")
+    assert stats["exposed_count"] == 1
+    assert stats["mastery_score"] == 0
+    assert stats["status"] == "exposed"
+
+
+@pytest.mark.asyncio
+async def test_increment_exposed_creates_learning_row_for_target(temp_db_path):
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.stats.increment_exposed("cat", is_target=True)
+    stats = await repos.stats.get("cat")
+    assert stats["exposed_count"] == 1
+    assert stats["status"] == "learning"
+
+
+@pytest.mark.asyncio
+async def test_increment_exposed_promotes_existing_exposed_to_learning(temp_db_path):
+    """When a word previously seen as scaffolding becomes a target, its
+    status must promote from 'exposed' to 'learning'."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.stats.increment_exposed("cat")  # scaffolding exposure
+    assert (await repos.stats.get("cat"))["status"] == "exposed"
+    await repos.stats.increment_exposed("cat", is_target=True)  # now target
+    assert (await repos.stats.get("cat"))["status"] == "learning"
+    assert (await repos.stats.get("cat"))["exposed_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_increment_exposed_preserves_learning_on_scaffolding_reexposure(temp_db_path):
+    """A word that was target once, then appears as scaffolding in a later
+    sentence, must stay 'learning' (target history is sticky)."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.stats.increment_exposed("cat", is_target=True)
+    await repos.stats.increment_exposed("cat")  # scaffolding re-exposure
+    assert (await repos.stats.get("cat"))["status"] == "learning"
+    assert (await repos.stats.get("cat"))["exposed_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_last_ai_message_returns_none_when_no_ai_rows(temp_db_path):
     repos = await init_db(temp_db_path, csv_path=None)
     assert await repos.log.last_ai_message() is None

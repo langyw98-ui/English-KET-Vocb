@@ -238,23 +238,9 @@ class StatsRepo:
         return row[0] if row else None
 
     async def increment_exposed(self, word: str, is_target: bool = False) -> None:
-        existing = await self.get(word)
-        if existing is None:
-            await self.apply_delta(word, delta=0, exposed=True, is_target=is_target)
-        else:
-            now = datetime.utcnow()
-            new_exposed = existing["exposed_count"] + 1
-            await self._db.execute(
-                "UPDATE vocab_stats SET exposed_count=?, status=?, last_seen_at=? "
-                "WHERE word=?",
-                (
-                    new_exposed,
-                    _derive_status(existing["status"], existing["mastery_score"], is_target=is_target),
-                    now,
-                    word,
-                ),
-            )
-        await self._db.commit()
+        # delta=0 leaves mastery/correct/wrong unchanged; exposed=True
+        # increments exposed_count; is_target threads through to status.
+        await self.apply_delta(word, delta=0, exposed=True, is_target=is_target)
 
 
 class ProfileRepo:
