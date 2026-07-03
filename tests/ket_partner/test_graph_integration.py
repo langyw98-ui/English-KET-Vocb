@@ -556,6 +556,64 @@ async def test_evaluate_node_drops_non_ket_words(setup):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_node_drops_word_with_matching_kid_and_correct_translation(setup):
+    """Regression: the evaluator LLM occasionally emits a WrongWord whose
+    kid_translation EXACTLY matches its correct_translation (both non-empty)
+    — typically when the kid's overall translation is mostly wrong, the LLM
+    contaminates correct neighbors. Seen in production: kid typed "我用" for
+    "I watch a funny movie on the DVD.", the LLM flagged "I" with
+    kid_translation="我" and correct_translation="我". A word the kid got
+    right by definition must not be marked wrong — drop it before the UI
+    renders and before apply_delta decrements mastery.
+    """
+    from flow.ket_partner.translation_evaluator import WrongWord
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="猫在盒子里",
+            wrong_words=[
+                # "cat" → kid wrote "猫", correct is "猫" — must be dropped.
+                WrongWord(word="cat", kid_translation="猫", correct_translation="猫"),
+                # "in" — genuinely wrong (kid wrote 上).
+                WrongWord(word="in", kid_translation="上", correct_translation="里"),
+            ],
+        ),
+        sentence_text="The cat is in the box.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "match-1"}},
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="猫盒子上")]},
+        config={"configurable": {"thread_id": "match-1"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # "cat" must NOT appear in the wrong-words section — kid got it right.
+    assert "cat 的意思是：" not in ai_msg, (
+        f"word with kid_translation == correct_translation must be dropped; "
+        f"got: {ai_msg!r}"
+    )
+    # "in" was genuinely wrong — must still appear.
+    assert "in 的意思是：里" in ai_msg, (
+        f"genuinely wrong word must still be surfaced; got: {ai_msg!r}"
+    )
+    # And mastery must reflect the distinction: "cat" not decremented,
+    # "in" decremented.
+    cat_stats = await setup.stats.get("cat")
+    in_stats = await setup.stats.get("in")
+    assert cat_stats is None or cat_stats["wrong_count"] == 0, (
+        f"'cat' must not be marked wrong (kid got it right); got {cat_stats}"
+    )
+    assert in_stats is not None and in_stats["wrong_count"] == 1, (
+        f"'in' must be marked wrong; got {in_stats}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monkeypatch):
     """Regression: when validation fails after all retries, the agent must
     track exposure for words in the FINAL displayed sentence, not the
@@ -779,6 +837,71 @@ async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypat
     # The retry call must surface the offending sentence verbatim.
     assert captured_kwargs[1] == duplicate, (
         f"regen call must pass duplicate_sentence={duplicate!r}, got {captured_kwargs[1]!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_node_regens_when_multi_word_target_is_split(setup, monkeypatch):
+    """When the LLM emits a multi-word target's constituent words separated
+    by other words ('He puts a CD into the old player.' for target 'CD
+    player'), the retry loop must detect the missing contiguous substring
+    and force a regen with target_split=True."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    captured: list = []
+    # First call splits the target; second call keeps it contiguous.
+    generate_seq = iter([
+        "He puts a CD into the old player.",
+        "She has a new CD player at home.",
+    ])
+
+    async def fake_generate(*a, **kw):
+        captured.append({
+            "sentence": next(generate_seq),
+            "target_split": kw.get("target_split", False),
+        })
+        return captured[-1]["sentence"]
+
+    async def fake_validate(sentence, repos):
+        # All words KET, no duplicates — target_split is the ONLY trigger.
+        return ValidationResult(ok=True, words_used=["he", "puts", "a"], non_ket_words=[])
+
+    async def fake_naturalness(llm, sentence, age=8):
+        return NaturalnessResult(ok=True, reason="")
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    # Override the target via the select_target_word node — easiest path is to
+    # monkeypatch select_target_word to return our target.
+    async def fake_select(repos, profile, cfg):
+        return "CD player"
+    monkeypatch.setattr(agent_module, "select_target_word", fake_select)
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "target-split"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # Initial call must NOT carry target_split (validator hasn't run yet).
+    assert captured[0]["target_split"] is False, (
+        f"first call must have target_split=False, got {captured[0]!r}"
+    )
+    # Retry call MUST carry target_split=True — the kid-facing output must
+    # contain the contiguous phrase from the second attempt.
+    assert captured[1]["target_split"] is True, (
+        f"regen call must signal target_split=True, got {captured[1]!r}"
+    )
+    assert "CD player" in ai_msg, (
+        f"kid must see the contiguous phrase, got: {ai_msg!r}"
     )
 
 

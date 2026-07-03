@@ -6,7 +6,7 @@ _SYSTEM = """You write ONE English sentence for a {age}-year-old Chinese kid to 
 
 Constraints:
 - {min_words}-{max_words} words, single sentence.
-- Naturally include the target word: "{target}".
+- Naturally include the target: "{target}".{multi_word_note}
 - Vary scaffolding words. Don't reuse words from recent sentences: {recent}.
 - Do NOT output any of these exact sentences (must differ in wording, subject, or scene): {avoid}
 - Prefer words the kid has likely mastered.
@@ -14,7 +14,7 @@ Constraints:
 - Must be NATURAL and make real-world sense. Subject-verb-object must reflect how things actually behave. No nonsense like "ice cream makes my nose move" or "the book sings".
 - Playful or imaginative situations are fine, but only if internally coherent.
 - NO emoji, NO Chinese.
-{duplicate_block}{non_ket_block}{hint_block}
+{target_split_block}{duplicate_block}{non_ket_block}{hint_block}
 Output: just the English sentence, nothing else.
 """
 
@@ -34,6 +34,20 @@ Your previous attempt was a WORD-FOR-WORD DUPLICATE of a recent sentence:
 That exact sentence is forbidden. Do NOT output it again — change the wording, subject, or scene.
 """
 
+# Inline note appended to the target line when the target is a multi-word
+# phrase. Without this, the LLM treats "CD player" as "use CD and player
+# somewhere" and emits sentences like "He puts a CD into the old player." —
+# the target phrase never appears contiguously, so stats tracking misses it.
+_MULTI_WORD_NOTE = " The target is a MULTI-WORD phrase — its words MUST appear contiguously in the sentence, side-by-side in the same order. Do NOT split them with other words."
+
+# Retry hint when the previous attempt split the target phrase. Stronger
+# than the initial note because the LLM has already failed the constraint.
+_TARGET_SPLIT_BLOCK = """
+Your previous attempt SPLIT the target phrase — its words did NOT appear contiguously in the sentence.
+The target "{target}" MUST appear as a single inseparable unit, with its words side-by-side in the same order.
+Rewrite the sentence so the target phrase is intact.
+"""
+
 
 async def generate_sentence(
     llm,
@@ -46,6 +60,7 @@ async def generate_sentence(
     naturalness_hint: str = "",
     avoid_non_ket_words: list = None,
     duplicate_sentence: str = "",
+    target_split: bool = False,
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
@@ -53,6 +68,8 @@ async def generate_sentence(
     hint_block = _HINT_BLOCK.format(hint=naturalness_hint) if naturalness_hint else ""
     non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
     duplicate_block = _DUPLICATE_BLOCK.format(duplicate=duplicate_sentence) if duplicate_sentence else ""
+    multi_word_note = _MULTI_WORD_NOTE if target and " " in target.strip() else ""
+    target_split_block = _TARGET_SPLIT_BLOCK.format(target=target) if target_split else ""
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
@@ -60,6 +77,8 @@ async def generate_sentence(
         target=target,
         recent=", ".join(recent_scaffolding) or "(none yet)",
         avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
+        multi_word_note=multi_word_note,
+        target_split_block=target_split_block,
         duplicate_block=duplicate_block,
         hint_block=hint_block,
         non_ket_block=non_ket_block,

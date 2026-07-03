@@ -161,3 +161,83 @@ async def test_generate_sentence_prompt_omits_duplicate_block_when_empty():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "DUPLICATE" not in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_clarifies_multi_word_target():
+    """When target is a multi-word phrase, the prompt must call out that its
+    words are inseparable. Without this the LLM splits them ('CD player' →
+    '...CD into the old player.')."""
+    llm = _make_llm("She has a new CD player.")
+    await generate_sentence(
+        llm,
+        target="CD player",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "MULTI-WORD" in system_text
+    assert "CD player" in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_omits_multi_word_note_for_single_word():
+    """Single-word targets must not render the multi-word note."""
+    llm = _make_llm("The cat runs.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "MULTI-WORD" not in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_calls_out_target_split_when_set():
+    """Regen after the LLM split a multi-word target: the prompt must surface
+    the failure as a dedicated callout so the LLM understands the structural
+    requirement it just violated."""
+    llm = _make_llm("She has a new CD player.")
+    await generate_sentence(
+        llm,
+        target="CD player",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        target_split=True,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "SPLIT" in system_text
+    assert "CD player" in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_omits_target_split_block_when_false():
+    """target_split=False (initial draft or non-split regen): block must not render."""
+    llm = _make_llm("The cat runs.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        target_split=False,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "SPLIT" not in system_text

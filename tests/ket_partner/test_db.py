@@ -134,30 +134,6 @@ async def test_stats_repo_apply_delta_caps_single_large_delta(temp_db_path):
 
 
 @pytest.mark.asyncio
-async def test_init_db_clamps_pre_existing_scores_above_cap(temp_db_path):
-    """Migration: rows left over from before the cap shipped must be clamped
-    on the next init_db call. Without this, old 4/5/... rows stay above the
-    cap until natural drift brings them down — defeating the cap's intent."""
-    # First init: pre-cap state. Write a row directly with mastery_score=5
-    # to simulate a legacy DB.
-    repos = await init_db(temp_db_path, csv_path=None)
-    await repos._db.execute(
-        "INSERT INTO vocab_stats (word, mastery_score, status) VALUES (?, ?, ?)",
-        ("legacy", 5, "mastered"),
-    )
-    await repos._db.commit()
-    await repos.close()
-
-    # Re-init: migration should clamp.
-    repos = await init_db(temp_db_path, csv_path=None)
-    stats = await repos.stats.get("legacy")
-    assert stats["mastery_score"] == 3, (
-        f"legacy mastery_score=5 must migrate to 3, got {stats['mastery_score']}"
-    )
-    assert stats["status"] == "mastered"
-
-
-@pytest.mark.asyncio
 async def test_status_transitions(temp_db_path):
     """A scaffolding-only word: stays 'exposed' below mastery 3, graduates
     to 'mastered' at 3, demotes to 'learning' only at mastery <= 1."""

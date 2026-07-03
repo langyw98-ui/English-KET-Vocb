@@ -93,10 +93,26 @@ class KETPartnerAgent:
         # 4. LLM emitting the same word twice (observed in production: the
         #    LLM flagged `snow` with two contradictory meanings). Dedup by
         #    word — first entry wins.
+        # 5. LLM flagging a word whose kid_translation EXACTLY matches its
+        #    correct_translation (both non-empty). The evaluator prompt's
+        #    rule 3 forbids this, but when the kid's overall translation is
+        #    mostly wrong the LLM occasionally contaminates correct neighbors
+        #    anyway. A kid who wrote "我" for "I" (correct_translation "我")
+        #    is right by definition — drop it.
         last_words_set = set(state.get("last_sentence_words") or [])
         seen_words: set[str] = set()
         filtered = []
         for entry in result.wrong_words:
+            if (
+                entry.kid_translation
+                and entry.correct_translation
+                and entry.kid_translation == entry.correct_translation
+            ):
+                logger.debug(
+                    f"evaluate_translation_node: dropping '{entry.word}' — "
+                    f"kid_translation matches correct_translation ({entry.kid_translation!r})"
+                )
+                continue
             if entry.word in last_words_set:
                 key = entry.word
             else:
@@ -154,7 +170,7 @@ class KETPartnerAgent:
         # forces the LLM to pick different scaffolding.
         seen_non_ket_words: list = []
 
-        def _regen(hint: str = "", duplicate_sentence: str = ""):
+        def _regen(hint: str = "", duplicate_sentence: str = "", target_split: bool = False):
             return generate_sentence(
                 self.llm_smart,
                 target=state["target_word"],
@@ -166,15 +182,18 @@ class KETPartnerAgent:
                 naturalness_hint=hint,
                 avoid_non_ket_words=seen_non_ket_words,
                 duplicate_sentence=duplicate_sentence,
+                target_split=target_split,
             )
 
         sentence = await _regen()
         result = None
         naturalness_hint = ""
+        target = state["target_word"]
         # Acceptance policy (per user spec):
         #   - non-KET count ≤ 1 → ACCEPT (annotate the lone non-KET word)
         #   - non-KET count > 1 → regen
         #   - duplicate → regen
+        #   - multi-word target phrase split apart → regen
         #   - naturalness fail → regen with hint
         # After retries exhaust, accept whatever we have and annotate any
         # remaining non-KET words (1 or many) so the kid can still translate.
@@ -182,7 +201,21 @@ class KETPartnerAgent:
             result = await validate_sentence(sentence, self.repos)
             is_duplicate = sentence in self._recent_sentences
             non_ket_count = len(result.non_ket_words)
-            logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
+            # Multi-word target presence check. When the target is a phrase
+            # like "CD player" / "ice cream", the LLM frequently emits the
+            # constituent words separated by other words ("He puts a CD into
+            # the old player."). The downstream patch that force-includes
+            # the target in words_used only fires on a contiguous substring
+            # match, so a split target would slip through untracked. Catch
+            # it here and force a regen with a targeted hint.
+            is_target_split = (
+                bool(target)
+                and " " in target.strip()
+                and target.lower() not in sentence.lower()
+            )
+            logger.debug(
+                f"validate_sentence: {result} duplicate={is_duplicate} target_split={is_target_split}"
+            )
             # Surface the offending sentence verbatim when THIS attempt is a
             # duplicate, so the LLM gets a hard "do not output that exact
             # sentence" callout instead of relying solely on the soft
@@ -190,7 +223,7 @@ class KETPartnerAgent:
             # an earlier retry shouldn't bleed into a later retry triggered
             # by a different reason (non-KET or naturalness).
             duplicate_sentence = sentence if is_duplicate else ""
-            if non_ket_count <= 1 and not is_duplicate:
+            if non_ket_count <= 1 and not is_duplicate and not is_target_split:
                 # Cheap gate: either all-KET, or a single tolerable non-KET word.
                 # If there's 1 non-KET word, accept and annotate after the loop.
                 if non_ket_count == 0:
@@ -208,24 +241,29 @@ class KETPartnerAgent:
                 # judging a sentence the policy already chose to annotate).
                 logger.debug(f"accept: 1 non-KET word ({result.non_ket_words[0]}) — will annotate")
                 break
-            # Either > 1 non-KET, or duplicate. Both warrant a full regen.
-            if is_duplicate:
+            # One of: > 1 non-KET, duplicate, or split target. All warrant a regen.
+            if is_target_split:
+                logger.debug(f"regen: multi-word target '{target}' was split apart in the sentence")
+            elif is_duplicate:
                 logger.debug(f"regen: sentence is a duplicate of a recent one")
             else:
                 logger.debug(f"regen: {non_ket_count} non-KET words (>1)")
             # Accumulate this attempt's non-KET words so the next regen
-            # prompt can list them as off-limits. Applies to both paths —
-            # duplicate sentences often share the same non-KET vocabulary
-            # the LLM keeps reaching for.
+            # prompt can list them as off-limits. Applies to all paths —
+            # duplicate / split-target sentences often share the same non-KET
+            # vocabulary the LLM keeps reaching for.
             for w in result.non_ket_words:
                 if w not in seen_non_ket_words:
                     seen_non_ket_words.append(w)
-            sentence = await _regen(hint=naturalness_hint, duplicate_sentence=duplicate_sentence)
+            sentence = await _regen(
+                hint=naturalness_hint,
+                duplicate_sentence=duplicate_sentence,
+                target_split=is_target_split,
+            )
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
             result = await validate_sentence(sentence, self.repos)
             logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
-        self._recent_scaffolding.append(result.words_used)
         self._recent_sentences.append(sentence)
         # Multi-word / non-alpha target patch. The validator tokenizes with
         # [A-Za-z']+, so targets like "MP3 player", "T-shirt", "ice cream" get
@@ -233,8 +271,10 @@ class KETPartnerAgent:
         # proper noun). Force-include the target when it actually appears in
         # the sentence so stats tracking marks it 'learning' and downstream
         # filters (which use last_sentence_words) recognize the same lexical
-        # unit the kid was asked about.
-        target = state["target_word"]
+        # unit the kid was asked about. (Note: the retry loop's target_split
+        # check above guarantees the contiguous presence for multi-word
+        # targets by the time we reach here; single-word targets always
+        # pass the substring test trivially.)
         if (
             target
             and target not in result.words_used
@@ -243,7 +283,7 @@ class KETPartnerAgent:
             result.words_used.append(target)
             # The validator also tracked the target's trailing constituent as
             # a standalone scaffolding word (e.g. "player" from "MP3 player").
-            # Drop it — in this sentence that word is part of the target
+            # Drop it — in that sentence the word is part of the target
             # phrase, not an independent lexical unit. Simple whitespace-split
             # covers space-separated phrases ("MP3 player", "ice cream").
             # Hyphenated / period targets ("T-shirt", "a.m.") still leak their
@@ -253,6 +293,15 @@ class KETPartnerAgent:
                 w for w in result.words_used
                 if w == target or w.lower() not in constituents
             ]
+            logger.debug(
+                f"multi-word target patch: added '{target}', "
+                f"final words_used={result.words_used}"
+            )
+        # Append to _recent_scaffolding AFTER the patch — otherwise the
+        # in-place mutation + reassignment leaves the outer list pointing at
+        # an intermediate state that contains BOTH "player" AND "MP3 player",
+        # which then leaks into the next turn's avoid_words list.
+        self._recent_scaffolding.append(result.words_used)
         # Per spec §11.9, exposed_count is incremented once per word in the
         # NEW sentence. Do this here (on the generate path) so non-generate
         # turns do not re-count the prior sentence's words. Set the flag so
