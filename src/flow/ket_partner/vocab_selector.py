@@ -29,7 +29,12 @@ async def select_target_word(
     in_refill = _compute_refill_mode(learning_count, profile["in_refill_mode"], low, high)
 
     turn = profile["total_turns"]
-    cold_start = learning_count == 0
+    # Cold start = pool below low watermark, not "completely empty". The
+    # narrower `learning_count == 0` definition closed the gate after turn 1
+    # and forced turn 2 to repeat the just-introduced word (only learning word
+    # in the pool). Filling the pool to the watermark before letting interval
+    # gating kick in guarantees distinct target words across the first turns.
+    cold_start = learning_count < low
     if in_refill and (cold_start or (turn - profile["last_new_word_turn"]) >= interval):
         target = await _pick_new_word(repos, profile)
         if target is not None:

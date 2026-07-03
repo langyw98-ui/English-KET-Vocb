@@ -1107,6 +1107,80 @@ async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monke
         )
 
 
+@pytest.mark.asyncio
+async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch):
+    """Regression: validator's [A-Za-z']+ tokenizer can't recognize multi-word
+    or alphanumeric targets like 'MP3 player' — only the trailing 'player'
+    lands in words_used (the 'MP3' token is silently dropped as a proper noun).
+    The agent must add the target itself so stats tracking marks it as
+    'learning' and downstream filters (which use last_sentence_words) still
+    see the right lexical unit."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner import vocab_selector
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+
+    csv_text = (
+        "word,part_of_speech,topic\n"
+        "MP3 player,n,Technology\n"
+        "player,n,Sport\n"
+        "she,pron,\n"
+        "listen,v,Action\n"
+        "to,prep,\n"
+        "music,n,Art\n"
+        "on,prep,\n"
+        "her,det,\n"
+        "new,adj,\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+
+    sentence = "She listens to music on her new MP3 player."
+
+    async def fake_generate(*a, **kw):
+        return sentence
+
+    async def fake_pick_new_word(repos, profile):
+        return "MP3 player"
+
+    async def fake_naturalness(*a, **kw):
+        return NaturalnessResult(ok=True, reason="")
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+    monkeypatch.setattr(vocab_selector, "_pick_new_word", fake_pick_new_word)
+
+    llm = _mock_llm(intent_resp=None)
+    agent = await build_agent(
+        llm_flash=llm,
+        llm_smart=llm,
+        repos=repos,
+        info={"nickname_kid": "t", "age": 8},
+    )
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "mp3-target"}},
+    )
+
+    # The target phrase must be tracked as 'learning' — without the fix the
+    # validator only sees 'player' and the is_target check never fires.
+    target_stats = await repos.stats.get("MP3 player")
+    assert target_stats is not None, "multi-word target must have a stats row"
+    assert target_stats["status"] == "learning", (
+        f"target must be status='learning' (got {target_stats['status']!r})"
+    )
+    # The target's trailing constituent must NOT be tracked as scaffolding.
+    # In this sentence "player" only appears as part of "MP3 player", so
+    # tracking it standalone would double-count the same lexical unit.
+    player_stats = await repos.stats.get("player")
+    assert player_stats is None, (
+        f"'player' must not have a stats row (it's part of the target phrase); "
+        f"got {player_stats!r}"
+    )
+    await repos.close()
+
+
 # ---------------------------------------------------------------------------
 # Task 5 (exposed-status plan): mastered decay + passive graduation +
 # learning_count exclusion. These tests lock in the design's load-bearing

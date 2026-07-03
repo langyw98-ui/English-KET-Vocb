@@ -1489,3 +1489,104 @@ wearer,n,Clothes and Accessories
 wildly,adv,
 wonderfully,adv,"Personal Feelings, Opinions and Experiences"
 wrongly,adv,"Personal Feelings, Opinions and Experiences"
+two,num,Measurements
+three,num,Measurements
+four,num,Measurements
+five,num,Measurements
+six,num,Measurements
+seven,num,Measurements
+eight,num,Measurements
+nine,num,Measurements
+ten,num,Measurements
+eleven,num,Measurements
+twelve,num,Measurements
+thirteen,num,Measurements
+fourteen,num,Measurements
+fifteen,num,Measurements
+sixteen,num,Measurements
+seventeen,num,Measurements
+eighteen,num,Measurements
+nineteen,num,Measurements
+twenty,num,Measurements
+thirty,num,Measurements
+forty,num,Measurements
+fifty,num,Measurements
+sixty,num,Measurements
+seventy,num,Measurements
+eighty,num,Measurements
+ninety,num,Measurements
+hundred,num,Measurements
+thousand,num,Measurements
+third,adj,Measurements
+fourth,adj,Measurements
+fifth,adj,Measurements
+sixth,adj,Measurements
+seventh,adj,Measurements
+eighth,adj,Measurements
+ninth,adj,Measurements
+tenth,adj,Measurements
+eleventh,adj,Measurements
+twelfth,adj,Measurements
+thirteenth,adj,Measurements
+fourteenth,adj,Measurements
+fifteenth,adj,Measurements
+sixteenth,adj,Measurements
+seventeenth,adj,Measurements
+eighteenth,adj,Measurements
+nineteenth,adj,Measurements
+twentieth,adj,Measurements
+twenty-first,adj,Measurements
+twenty-second,adj,Measurements
+twenty-third,adj,Measurements
+twenty-fourth,adj,Measurements
+twenty-fifth,adj,Measurements
+twenty-sixth,adj,Measurements
+twenty-seventh,adj,Measurements
+twenty-eighth,adj,Measurements
+twenty-ninth,adj,Measurements
+thirtieth,adj,Measurements
+thirty-first,adj,Measurements
+Brazil,n,"Countries, Languages and Nationalities"
+Brazilian,adj & n,"Countries, Languages and Nationalities"
+Canada,n,"Countries, Languages and Nationalities"
+Canadian,adj & n,"Countries, Languages and Nationalities"
+China,n,"Countries, Languages and Nationalities"
+Chinese,adj & n,"Countries, Languages and Nationalities"
+France,n,"Countries, Languages and Nationalities"
+French,adj & n,"Countries, Languages and Nationalities"
+Ireland,n,"Countries, Languages and Nationalities"
+Irish,adj & n,"Countries, Languages and Nationalities"
+India,n,"Countries, Languages and Nationalities"
+Indian,adj & n,"Countries, Languages and Nationalities"
+Italy,n,"Countries, Languages and Nationalities"
+Italian,adj & n,"Countries, Languages and Nationalities"
+Spain,n,"Countries, Languages and Nationalities"
+Spanish,adj & n,"Countries, Languages and Nationalities"
+England,n,"Countries, Languages and Nationalities"
+English,adj & n,"Countries, Languages and Nationalities"
+America,n,"Countries, Languages and Nationalities"
+American,adj & n,"Countries, Languages and Nationalities"
+Australia,n,"Countries, Languages and Nationalities; The Natural World"
+Australian,adj & n,"Countries, Languages and Nationalities"
+Germany,n,"Countries, Languages and Nationalities"
+German,adj & n,"Countries, Languages and Nationalities"
+Japan,n,"Countries, Languages and Nationalities"
+Japanese,adj & n,"Countries, Languages and Nationalities"
+Korea,n,"Countries, Languages and Nationalities"
+Korean,adj & n,"Countries, Languages and Nationalities"
+Russia,n,"Countries, Languages and Nationalities"
+Russian,adj & n,"Countries, Languages and Nationalities"
+Greece,n,"Countries, Languages and Nationalities"
+Greek,adj & n,"Countries, Languages and Nationalities"
+Mexico,n,"Countries, Languages and Nationalities"
+Mexican,adj & n,"Countries, Languages and Nationalities"
+Turkey,n,"Countries, Languages and Nationalities"
+Turkish,adj & n,"Countries, Languages and Nationalities"
+UK,n,"Countries, Languages and Nationalities"
+USA,n,"Countries, Languages and Nationalities"
+Africa,n,The Natural World
+Antarctica,n,The Natural World
+Asia,n,The Natural World
+Europe,n,The Natural World
+North America,n,The Natural World
+South America,n,The Natural World

@@ -219,6 +219,32 @@ class KETPartnerAgent:
             logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
         self._recent_scaffolding.append(result.words_used)
         self._recent_sentences.append(sentence)
+        # Multi-word / non-alpha target patch. The validator tokenizes with
+        # [A-Za-z']+, so targets like "MP3 player", "T-shirt", "ice cream" get
+        # split (or partially dropped — "MP3" → "MP" silently skipped as a
+        # proper noun). Force-include the target when it actually appears in
+        # the sentence so stats tracking marks it 'learning' and downstream
+        # filters (which use last_sentence_words) recognize the same lexical
+        # unit the kid was asked about.
+        target = state["target_word"]
+        if (
+            target
+            and target not in result.words_used
+            and target.lower() in sentence.lower()
+        ):
+            result.words_used.append(target)
+            # The validator also tracked the target's trailing constituent as
+            # a standalone scaffolding word (e.g. "player" from "MP3 player").
+            # Drop it — in this sentence that word is part of the target
+            # phrase, not an independent lexical unit. Simple whitespace-split
+            # covers space-separated phrases ("MP3 player", "ice cream").
+            # Hyphenated / period targets ("T-shirt", "a.m.") still leak their
+            # alphabetic tail; rare in KET vocab, accepted as a known limit.
+            constituents = {c.lower() for c in target.split()}
+            result.words_used = [
+                w for w in result.words_used
+                if w == target or w.lower() not in constituents
+            ]
         # Per spec §11.9, exposed_count is incremented once per word in the
         # NEW sentence. Do this here (on the generate path) so non-generate
         # turns do not re-count the prior sentence's words. Set the flag so
@@ -229,7 +255,6 @@ class KETPartnerAgent:
         # they're selected as target in a future turn. Without this flag, all
         # words would pool into 'exposed' and refill_mode / oldest_learning_word
         # would treat passive scaffolding as if it were target practice.
-        target = state["target_word"]
         for w in result.words_used:
             await self.repos.stats.increment_exposed(w, is_target=(w == target))
         # If the accepted sentence still has non-KET words, look up their
