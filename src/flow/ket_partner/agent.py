@@ -154,7 +154,7 @@ class KETPartnerAgent:
         # forces the LLM to pick different scaffolding.
         seen_non_ket_words: list = []
 
-        def _regen(hint: str = ""):
+        def _regen(hint: str = "", duplicate_sentence: str = ""):
             return generate_sentence(
                 self.llm_smart,
                 target=state["target_word"],
@@ -165,6 +165,7 @@ class KETPartnerAgent:
                 avoid_sentences=avoid_sentences,
                 naturalness_hint=hint,
                 avoid_non_ket_words=seen_non_ket_words,
+                duplicate_sentence=duplicate_sentence,
             )
 
         sentence = await _regen()
@@ -182,6 +183,13 @@ class KETPartnerAgent:
             is_duplicate = sentence in self._recent_sentences
             non_ket_count = len(result.non_ket_words)
             logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
+            # Surface the offending sentence verbatim when THIS attempt is a
+            # duplicate, so the LLM gets a hard "do not output that exact
+            # sentence" callout instead of relying solely on the soft
+            # avoid_sentences list. Reset each iteration — a dup signal from
+            # an earlier retry shouldn't bleed into a later retry triggered
+            # by a different reason (non-KET or naturalness).
+            duplicate_sentence = sentence if is_duplicate else ""
             if non_ket_count <= 1 and not is_duplicate:
                 # Cheap gate: either all-KET, or a single tolerable non-KET word.
                 # If there's 1 non-KET word, accept and annotate after the loop.
@@ -194,7 +202,7 @@ class KETPartnerAgent:
                     if naturalness.ok:
                         break
                     naturalness_hint = naturalness.reason
-                    sentence = await _regen(hint=naturalness_hint)
+                    sentence = await _regen(hint=naturalness_hint, duplicate_sentence=duplicate_sentence)
                     continue
                 # non_ket_count == 1: accept as-is, skip naturalness (no point
                 # judging a sentence the policy already chose to annotate).
@@ -212,7 +220,7 @@ class KETPartnerAgent:
             for w in result.non_ket_words:
                 if w not in seen_non_ket_words:
                     seen_non_ket_words.append(w)
-            sentence = await _regen(hint=naturalness_hint)
+            sentence = await _regen(hint=naturalness_hint, duplicate_sentence=duplicate_sentence)
         else:
             logger.warning(f"sentence validation failed after retries; accepting current draft")
             result = await validate_sentence(sentence, self.repos)

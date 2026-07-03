@@ -14,7 +14,7 @@ Constraints:
 - Must be NATURAL and make real-world sense. Subject-verb-object must reflect how things actually behave. No nonsense like "ice cream makes my nose move" or "the book sings".
 - Playful or imaginative situations are fine, but only if internally coherent.
 - NO emoji, NO Chinese.
-{non_ket_block}{hint_block}
+{duplicate_block}{non_ket_block}{hint_block}
 Output: just the English sentence, nothing else.
 """
 
@@ -28,6 +28,12 @@ Previous attempt(s) used these non-KET words — do NOT use them again, pick KET
 {words}
 """
 
+_DUPLICATE_BLOCK = """
+Your previous attempt was a WORD-FOR-WORD DUPLICATE of a recent sentence:
+{duplicate}
+That exact sentence is forbidden. Do NOT output it again — change the wording, subject, or scene.
+"""
+
 
 async def generate_sentence(
     llm,
@@ -39,12 +45,14 @@ async def generate_sentence(
     avoid_sentences: list = None,
     naturalness_hint: str = "",
     avoid_non_ket_words: list = None,
+    duplicate_sentence: str = "",
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
     avoid_non_ket_words = avoid_non_ket_words or []
     hint_block = _HINT_BLOCK.format(hint=naturalness_hint) if naturalness_hint else ""
     non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
+    duplicate_block = _DUPLICATE_BLOCK.format(duplicate=duplicate_sentence) if duplicate_sentence else ""
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
@@ -52,6 +60,7 @@ async def generate_sentence(
         target=target,
         recent=", ".join(recent_scaffolding) or "(none yet)",
         avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
+        duplicate_block=duplicate_block,
         hint_block=hint_block,
         non_ket_block=non_ket_block,
     )

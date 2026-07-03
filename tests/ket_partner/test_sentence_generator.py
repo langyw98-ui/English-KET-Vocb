@@ -121,3 +121,43 @@ async def test_generate_sentence_prompt_omits_non_ket_block_when_empty():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "non-KET words" not in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_calls_out_duplicate_when_set():
+    """Regen after an exact-match duplicate: the offending sentence must
+    surface as a dedicated callout so the LLM understands which exact
+    wording to avoid — not just the soft avoid_sentences list."""
+    llm = _make_llm("A fresh new sentence.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        duplicate_sentence="The cat runs fast.",
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "The cat runs fast." in system_text
+    assert "DUPLICATE" in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_omits_duplicate_block_when_empty():
+    """First attempt (no duplicate yet): block should not render."""
+    llm = _make_llm("A fresh new sentence.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "DUPLICATE" not in system_text

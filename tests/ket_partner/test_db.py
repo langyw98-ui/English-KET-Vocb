@@ -106,6 +106,58 @@ async def test_stats_repo_apply_delta_floor_at_zero(temp_db_path):
 
 
 @pytest.mark.asyncio
+async def test_stats_repo_apply_delta_caps_mastery_at_3(temp_db_path):
+    """Repeated +1 deltas beyond 3 must stick at 3. Without the cap, the
+    score accumulates indefinitely and the kid has to burn many wrong answers
+    to demote a previously-mastered word back into the learning pool."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    for _ in range(6):
+        await repos.stats.apply_delta("cat", delta=1, exposed=True)
+    stats = await repos.stats.get("cat")
+    assert stats["mastery_score"] == 3, (
+        f"mastery_score must cap at 3 (got {stats['mastery_score']})"
+    )
+    assert stats["status"] == "mastered"
+    # exposed_count and correct_count still accumulate — the cap is on
+    # mastery_score only, not the audit counters.
+    assert stats["exposed_count"] == 6
+    assert stats["correct_count"] == 6
+
+
+@pytest.mark.asyncio
+async def test_stats_repo_apply_delta_caps_single_large_delta(temp_db_path):
+    """A single delta > CAP (e.g., backfill or test setup) must clamp at CAP."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.stats.apply_delta("cat", delta=5, exposed=True)
+    stats = await repos.stats.get("cat")
+    assert stats["mastery_score"] == 3
+
+
+@pytest.mark.asyncio
+async def test_init_db_clamps_pre_existing_scores_above_cap(temp_db_path):
+    """Migration: rows left over from before the cap shipped must be clamped
+    on the next init_db call. Without this, old 4/5/... rows stay above the
+    cap until natural drift brings them down — defeating the cap's intent."""
+    # First init: pre-cap state. Write a row directly with mastery_score=5
+    # to simulate a legacy DB.
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos._db.execute(
+        "INSERT INTO vocab_stats (word, mastery_score, status) VALUES (?, ?, ?)",
+        ("legacy", 5, "mastered"),
+    )
+    await repos._db.commit()
+    await repos.close()
+
+    # Re-init: migration should clamp.
+    repos = await init_db(temp_db_path, csv_path=None)
+    stats = await repos.stats.get("legacy")
+    assert stats["mastery_score"] == 3, (
+        f"legacy mastery_score=5 must migrate to 3, got {stats['mastery_score']}"
+    )
+    assert stats["status"] == "mastered"
+
+
+@pytest.mark.asyncio
 async def test_status_transitions(temp_db_path):
     """A scaffolding-only word: stays 'exposed' below mastery 3, graduates
     to 'mastered' at 3, demotes to 'learning' only at mastery <= 1."""

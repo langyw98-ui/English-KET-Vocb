@@ -9,6 +9,15 @@ import aiosqlite
 
 from flow.common import logger
 
+# Mastery ceiling. A score of 3 graduates a word to 'mastered'; without a
+# hard cap, repeated correct translations keep accumulating (4, 5, 6, ...) and
+# the kid must burn many wrong answers before a previously-mastered word
+# demotes back into the learning pool. Capping at 3 keeps the demotion path
+# short: 3 → 2 (sticky 'mastered' via _derive_status) → 1 ('learning') in
+# two wrong answers — so a kid who once knew a word but has drifted is
+# re-detected quickly and the word re-enters active practice.
+MASTERY_CAP = 3
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ket_vocabulary (
     word    TEXT PRIMARY KEY,
@@ -72,11 +81,11 @@ def _derive_status(
 ) -> str:
     """Derive vocab_stats.status from inputs.
 
-    'exposed':  passive exposure only, never been target, mastery < 3
-    'learning': has been target OR demoted from mastered, mastery < 3
-    'mastered': mastery_score >= 3 (sticky at 2, demotes only at <= 1)
+    'exposed':  passive exposure only, never been target, mastery < MASTERY_CAP
+    'learning': has been target OR demoted from mastered, mastery < MASTERY_CAP
+    'mastered': mastery_score >= MASTERY_CAP (sticky at CAP-1, demotes only at <=1)
     """
-    if mastery_score >= 3:
+    if mastery_score >= MASTERY_CAP:
         return "mastered"
     if current_status == "mastered":
         # 宽容 decay: 3→2 absorbed, demote only at <=1
@@ -183,7 +192,7 @@ class StatsRepo:
         existing = await self.get(word)
         now = datetime.utcnow()
         if existing is None:
-            score = max(0, delta)
+            score = min(MASTERY_CAP, max(0, delta))
             await self._db.execute(
                 "INSERT INTO vocab_stats "
                 "(word, exposed_count, correct_count, wrong_count, mastery_score, "
@@ -201,7 +210,7 @@ class StatsRepo:
                 ),
             )
         else:
-            new_score = max(0, existing["mastery_score"] + delta)
+            new_score = min(MASTERY_CAP, max(0, existing["mastery_score"] + delta))
             new_exposed = existing["exposed_count"] + (1 if exposed else 0)
             new_correct = existing["correct_count"] + (1 if delta > 0 else 0)
             new_wrong = existing["wrong_count"] + (1 if delta < 0 else 0)

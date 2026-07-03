@@ -736,6 +736,53 @@ async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypatch):
+    """When a regen is triggered by an exact-match duplicate, the next
+    generate call must surface the offending sentence verbatim as
+    `duplicate_sentence` so the LLM gets an explicit "do not output that
+    exact sentence" callout — not just the soft avoid_sentences list."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    captured_kwargs: list = []
+    duplicate = "The cat likes to dance."
+    # First call returns the duplicate; second call returns a fresh sentence.
+    generate_seq = iter([duplicate, "The dog likes to swim."])
+
+    async def fake_generate(*a, **kw):
+        captured_kwargs.append(kw.get("duplicate_sentence", ""))
+        return next(generate_seq)
+
+    async def fake_validate(sentence, repos):
+        # Always passes KET validation — duplicate is the ONLY reason to retry.
+        return ValidationResult(ok=True, words_used=["the", "cat", "likes"], non_ket_words=[])
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    # Seed recent_sentences with the duplicate so the first draft collides.
+    graph.agent._recent_sentences.append(duplicate)
+
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "dup-kwarg"}},
+    )
+
+    # Initial call has no duplicate to call out (validation hasn't run yet).
+    assert captured_kwargs[0] == "", (
+        f"first generate call must have empty duplicate_sentence, got {captured_kwargs[0]!r}"
+    )
+    # The retry call must surface the offending sentence verbatim.
+    assert captured_kwargs[1] == duplicate, (
+        f"regen call must pass duplicate_sentence={duplicate!r}, got {captured_kwargs[1]!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypatch):
     """The `recent_scaffolding` argument passed to generate_sentence must
     reflect the last N SENTENCES' worth of words (flattened), not just the
