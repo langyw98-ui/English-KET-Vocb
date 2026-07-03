@@ -1505,32 +1505,20 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_mastered_word_absorbs_one_wrong_answer(setup):
-    """宽容 policy: mastery 3→2 keeps 'mastered' status. Single mistake
-    must not flapping the word back to 'learning'."""
+async def test_mastered_word_demotes_after_one_wrong(setup):
+    """CAP=2 demotion path: a single wrong answer drops mastery 2→1 and the
+    word immediately returns to 'learning'. With CAP=2 there is no
+    absorption buffer (the 3→2 'sticky mastered' zone is gone), so drifted
+    words re-enter active practice after one mistake."""
     repos = setup
-    # Drive 'cat' to mastery=3 via target exposure + 2 correct deltas
+    # Drive 'cat' to mastery=CAP=2 via target exposure + 1 correct delta
     await repos.stats.apply_delta("cat", delta=1, exposed=True, is_target=True)
-    await repos.stats.apply_delta("cat", delta=1, is_target=True)
     await repos.stats.apply_delta("cat", delta=1, is_target=True)
     assert (await repos.stats.get("cat"))["status"] == "mastered"
+    assert (await repos.stats.get("cat"))["mastery_score"] == 2
 
-    # One wrong answer drops mastery to 2 — status must stay mastered
+    # One wrong answer → 2→1, demotes to learning immediately
     await repos.stats.apply_delta("cat", delta=-1)
-    cat = await repos.stats.get("cat")
-    assert cat["mastery_score"] == 2
-    assert cat["status"] == "mastered"
-
-
-@pytest.mark.asyncio
-async def test_mastered_word_demotes_after_two_consecutive_wrong(setup):
-    """3→2 (absorbed) → 1 demotes to 'learning'. Per spec: 连续答错掉到1."""
-    repos = setup
-    await repos.stats.apply_delta("cat", delta=1, exposed=True, is_target=True)
-    await repos.stats.apply_delta("cat", delta=1, is_target=True)
-    await repos.stats.apply_delta("cat", delta=1, is_target=True)
-    await repos.stats.apply_delta("cat", delta=-1)  # 3→2, stays mastered
-    await repos.stats.apply_delta("cat", delta=-1)  # 2→1, demotes
     cat = await repos.stats.get("cat")
     assert cat["mastery_score"] == 1
     assert cat["status"] == "learning"
@@ -1540,16 +1528,17 @@ async def test_mastered_word_demotes_after_two_consecutive_wrong(setup):
 async def test_passive_exposed_word_can_graduate_to_mastered(setup):
     """A word that has never been target can still reach 'mastered' via
     correct translations during other target practices. This is the user's
-    '不耽误被动曝光的词自然达到掌握' goal."""
+    '不耽误被动曝光的词自然达到掌握' goal. CAP=2 means two correct exposures
+    graduate the word."""
     repos = setup
-    # 'cat' appears as scaffolding 3 times, kid translates correctly each time
+    # 'cat' appears as scaffolding 2 times, kid translates correctly each time
     await repos.stats.apply_delta("cat", delta=1, exposed=True)  # exposed + correct
     assert (await repos.stats.get("cat"))["status"] == "exposed"
+    assert (await repos.stats.get("cat"))["mastery_score"] == 1
     await repos.stats.apply_delta("cat", delta=1)
-    assert (await repos.stats.get("cat"))["status"] == "exposed"
-    await repos.stats.apply_delta("cat", delta=1)
-    # mastery hits 3 → graduates to 'mastered' regardless of target history
+    # mastery hits CAP=2 → graduates to 'mastered' regardless of target history
     assert (await repos.stats.get("cat"))["status"] == "mastered"
+    assert (await repos.stats.get("cat"))["mastery_score"] == 2
 
 
 @pytest.mark.asyncio

@@ -4,25 +4,29 @@ import pytest
 from flow.ket_partner.db import _derive_status, init_db, VocabRepo, StatsRepo, ProfileRepo, LogRepo
 
 
-def test_derive_status_mastered_at_score_3():
-    assert _derive_status("learning", 3) == "mastered"
-    assert _derive_status("exposed", 3) == "mastered"
-    assert _derive_status("mastered", 5) == "mastered"
-
-
-def test_derive_status_mastered_sticky_at_score_2():
-    """宽容 policy: 3→2 absorbed, stays mastered."""
-    assert _derive_status("mastered", 2) == "mastered"
+def test_derive_status_mastered_at_score_cap():
+    """mastery_score >= MASTERY_CAP graduates to 'mastered' regardless of
+    prior status. CAP=2 means a single correct on top of an exposed/learning
+    word (score 1→2) crosses the threshold."""
+    assert _derive_status("learning", 2) == "mastered"
+    assert _derive_status("exposed", 2) == "mastered"
+    assert _derive_status("mastered", 5) == "mastered"  # above cap clamps
 
 
 def test_derive_status_mastered_demotes_at_score_1_or_below():
+    """Demotion path: with CAP=2 there is no absorption buffer, so a single
+    wrong answer dropping mastery 2→1 immediately demotes 'mastered' to
+    'learning' — re-detection of a drifted word is fast."""
     assert _derive_status("mastered", 1) == "learning"
     assert _derive_status("mastered", 0) == "learning"
 
 
 def test_derive_status_is_target_promotes_to_learning():
+    """is_target=True promotes any sub-cap word to 'learning' (active
+    practice). Use mastery=1 to stay below cap so we test the promotion
+    branch, not the cap branch."""
     assert _derive_status("exposed", 0, is_target=True) == "learning"
-    assert _derive_status("exposed", 2, is_target=True) == "learning"
+    assert _derive_status("exposed", 1, is_target=True) == "learning"
     assert _derive_status(None, 0, is_target=True) == "learning"  # new row INSERT
 
 
@@ -30,11 +34,13 @@ def test_derive_status_new_row_not_target_is_exposed():
     assert _derive_status(None, 0) == "exposed"
 
 
-def test_derive_status_preserves_exposed_and_learning():
+def test_derive_status_preserves_exposed_and_learning_below_cap():
+    """Below cap (mastery < 2): exposed stays exposed, learning stays
+    learning. At cap (mastery == 2): graduates to 'mastered'."""
     assert _derive_status("exposed", 1) == "exposed"
-    assert _derive_status("exposed", 2) == "exposed"
+    assert _derive_status("exposed", 2) == "mastered"
     assert _derive_status("learning", 1) == "learning"
-    assert _derive_status("learning", 2) == "learning"
+    assert _derive_status("learning", 2) == "mastered"
 
 
 @pytest.mark.asyncio
@@ -106,16 +112,18 @@ async def test_stats_repo_apply_delta_floor_at_zero(temp_db_path):
 
 
 @pytest.mark.asyncio
-async def test_stats_repo_apply_delta_caps_mastery_at_3(temp_db_path):
-    """Repeated +1 deltas beyond 3 must stick at 3. Without the cap, the
-    score accumulates indefinitely and the kid has to burn many wrong answers
-    to demote a previously-mastered word back into the learning pool."""
+async def test_stats_repo_apply_delta_caps_mastery_at_cap(temp_db_path):
+    """Repeated +1 deltas beyond CAP must stick at CAP=2. Without the cap,
+    the score accumulates indefinitely and the kid has to burn many wrong
+    answers to demote a previously-mastered word back into the learning
+    pool. Capping at 2 keeps the demotion path short: a single wrong answer
+    (2→1) demotes immediately."""
     repos = await init_db(temp_db_path, csv_path=None)
     for _ in range(6):
         await repos.stats.apply_delta("cat", delta=1, exposed=True)
     stats = await repos.stats.get("cat")
-    assert stats["mastery_score"] == 3, (
-        f"mastery_score must cap at 3 (got {stats['mastery_score']})"
+    assert stats["mastery_score"] == 2, (
+        f"mastery_score must cap at 2 (got {stats['mastery_score']})"
     )
     assert stats["status"] == "mastered"
     # exposed_count and correct_count still accumulate — the cap is on
@@ -126,34 +134,31 @@ async def test_stats_repo_apply_delta_caps_mastery_at_3(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_stats_repo_apply_delta_caps_single_large_delta(temp_db_path):
-    """A single delta > CAP (e.g., backfill or test setup) must clamp at CAP."""
+    """A single delta > CAP (e.g., backfill or test setup) must clamp at CAP=2."""
     repos = await init_db(temp_db_path, csv_path=None)
     await repos.stats.apply_delta("cat", delta=5, exposed=True)
     stats = await repos.stats.get("cat")
-    assert stats["mastery_score"] == 3
+    assert stats["mastery_score"] == 2
 
 
 @pytest.mark.asyncio
 async def test_status_transitions(temp_db_path):
-    """A scaffolding-only word: stays 'exposed' below mastery 3, graduates
-    to 'mastered' at 3, demotes to 'learning' only at mastery <= 1."""
+    """A scaffolding-only word: stays 'exposed' below mastery CAP=2,
+    graduates to 'mastered' at 2, demotes to 'learning' immediately on a
+    single wrong answer (no absorption buffer with CAP=2)."""
     repos = await init_db(temp_db_path, csv_path=None)
     # delta=1 exposed=True, no is_target → 'exposed' (passive + correct)
     await repos.stats.apply_delta("cat", delta=1, exposed=True)
     assert (await repos.stats.get("cat"))["status"] == "exposed"
-    await repos.stats.apply_delta("cat", delta=1)
-    assert (await repos.stats.get("cat"))["mastery_score"] == 2
-    assert (await repos.stats.get("cat"))["status"] == "exposed"
-    await repos.stats.apply_delta("cat", delta=1)
-    assert (await repos.stats.get("cat"))["status"] == "mastered"
-    # 3→2: 宽容, stays mastered
-    await repos.stats.apply_delta("cat", delta=-1)
-    assert (await repos.stats.get("cat"))["status"] == "mastered"
-    assert (await repos.stats.get("cat"))["mastery_score"] == 2
-    # 2→1: demote to learning (was mastered, regardless of target history)
-    await repos.stats.apply_delta("cat", delta=-1)
-    assert (await repos.stats.get("cat"))["status"] == "learning"
     assert (await repos.stats.get("cat"))["mastery_score"] == 1
+    # 1→2: crosses cap → mastered
+    await repos.stats.apply_delta("cat", delta=1)
+    assert (await repos.stats.get("cat"))["mastery_score"] == 2
+    assert (await repos.stats.get("cat"))["status"] == "mastered"
+    # 2→1: no absorption buffer with CAP=2 — demotes immediately to learning
+    await repos.stats.apply_delta("cat", delta=-1)
+    assert (await repos.stats.get("cat"))["mastery_score"] == 1
+    assert (await repos.stats.get("cat"))["status"] == "learning"
 
 
 @pytest.mark.asyncio

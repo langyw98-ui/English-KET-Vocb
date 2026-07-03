@@ -9,13 +9,13 @@ import aiosqlite
 
 from flow.common import logger
 
-# Mastery ceiling. A score of 3 graduates a word to 'mastered'; without a
-# hard cap, repeated correct translations keep accumulating (4, 5, 6, ...) and
-# the kid must burn many wrong answers before a previously-mastered word
-# demotes back into the learning pool. Capping at 3 keeps the demotion path
-# short: 3 → 2 (sticky 'mastered' via _derive_status) → 1 ('learning') in
-# two wrong answers — so a kid who once knew a word but has drifted is
-# re-detected quickly and the word re-enters active practice.
+# Mastery ceiling. A score of 2 graduates a word to 'mastered'; without a
+# hard cap, repeated correct translations keep accumulating (3, 4, 5, ...)
+# and the kid must burn many wrong answers before a previously-mastered word
+# demotes back into the learning pool. Capping at 2 keeps the demotion path
+# short: 2 → 1 ('learning') in a single wrong answer — so a kid who once
+# knew a word but has drifted is re-detected quickly and the word re-enters
+# active practice.
 MASTERY_CAP = 2
 
 _SCHEMA = """
@@ -83,12 +83,17 @@ def _derive_status(
 
     'exposed':  passive exposure only, never been target, mastery < MASTERY_CAP
     'learning': has been target OR demoted from mastered, mastery < MASTERY_CAP
-    'mastered': mastery_score >= MASTERY_CAP (sticky at CAP-1, demotes only at <=1)
+    'mastered': mastery_score >= MASTERY_CAP
+
+    With CAP=2 there is no absorption buffer — mastery < 2 always means
+    'not mastered', so a single wrong answer (2→1) demotes immediately.
     """
     if mastery_score >= MASTERY_CAP:
         return "mastered"
     if current_status == "mastered":
-        # 宽容 decay: 3→2 absorbed, demote only at <=1
+        # Below cap (mastery <= 1) and was mastered → demote to learning.
+        # The conditional keeps the demotion threshold explicit in case CAP
+        # is raised in the future; with CAP=2 the else branch is unreachable.
         return "learning" if mastery_score <= 1 else "mastered"
     if is_target:
         return "learning"
