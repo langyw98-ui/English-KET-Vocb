@@ -614,6 +614,151 @@ async def test_evaluate_node_drops_word_with_matching_kid_and_correct_translatio
 
 
 @pytest.mark.asyncio
+async def test_overall_correct_false_with_no_wrong_words_keeps_mastery_neutral(setup):
+    """Regression: kid aligned every English word correctly but the sentence
+    as a whole is still wrong — typically by ADDING content with no English
+    source (e.g. "我们可以到外面去公园玩球" for "We can go out to play in the
+    park." — the "球" has no English source).
+
+    Before the fix, evaluator returned wrong_words=[] and apply_mastery_updates
+    treated the turn as fully correct: every word in last_sentence_words got
+    +1. A wrong turn was silently recorded as a right one, inflating mastery.
+
+    After the fix, evaluator sets overall_correct=False and apply_mastery_updates
+    gives delta=0 (neutral) to all words in this case — neither rewarding nor
+    punishing, since no specific word is to blame.
+    """
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="猫在床上",
+            wrong_words=[],
+            overall_correct=False,
+        ),
+        sentence_text="The cat is on the bed.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    # Turn 1: generate the sentence so each word has a stats row at mastery 0
+    # (status 'exposed' or 'learning' depending on whether it's the target).
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "overall-false"}},
+    )
+    cat_after_t1 = await setup.stats.get("cat")
+    bed_after_t1 = await setup.stats.get("bed")
+    assert cat_after_t1 is not None and bed_after_t1 is not None
+    # Both words start at mastery 0 after the generate turn (no apply_delta yet
+    # from a translation evaluation — only exposure tracking ran).
+    cat_mastery_t1 = cat_after_t1["mastery_score"]
+    bed_mastery_t1 = bed_after_t1["mastery_score"]
+
+    # Turn 2: kid's translation has no misaligned word but adds content — the
+    # evaluator returns wrong=[] + overall_correct=False.
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="猫在床上玩球")]},
+        config={"configurable": {"thread_id": "overall-false"}},
+    )
+
+    # Both words must stay at the SAME mastery_score — no +1 reward for a
+    # turn that was structurally wrong even though per-word alignment was OK.
+    cat_after_t2 = await setup.stats.get("cat")
+    bed_after_t2 = await setup.stats.get("bed")
+    assert cat_after_t2["mastery_score"] == cat_mastery_t1, (
+        f"cat.mastery_score must stay neutral (no +1) when overall_correct=False "
+        f"and no word is misaligned; was {cat_mastery_t1}, now {cat_after_t2['mastery_score']}"
+    )
+    assert bed_after_t2["mastery_score"] == bed_mastery_t1, (
+        f"bed.mastery_score must stay neutral (no +1) when overall_correct=False "
+        f"and no word is misaligned; was {bed_mastery_t1}, now {bed_after_t2['mastery_score']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_overall_correct_false_with_no_wrong_words_renders_deviation_message(setup):
+    """When the kid's translation is structurally wrong but no specific English
+    word is misaligned (e.g. kid ADDED content), format_output_text must
+    surface feedback — without this branch the kid would see no wrong-words
+    list AND no correct translation, looking like silent acceptance.
+
+    The deviation branch renders the correct_translation AND a 偏差 message so
+    the kid knows their translation was wrong overall.
+    """
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="我们可以去公园里玩",
+            wrong_words=[],
+            overall_correct=False,
+        ),
+        sentence_text="We can go out to play in the park.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "ui-deviation"}},
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="我们可以到外面去公园玩球")]},
+        config={"configurable": {"thread_id": "ui-deviation"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # The correct_translation must be shown — without it the kid has no
+    # reference for what was wrong.
+    assert "正确翻译：我们可以去公园里玩" in ai_msg, (
+        f"correct_translation must render in deviation branch; got: {ai_msg!r}"
+    )
+    # The deviation message must surface — without it the only signal would
+    # be the bare correct_translation line, which the kid might mistake for
+    # a successful turn's reference rendering.
+    assert "你的翻译和原句意思有些偏差" in ai_msg, (
+        f"deviation message must render when overall_correct=False and wrong=[]; got: {ai_msg!r}"
+    )
+    # The standard wrong-words header must NOT appear (no per-word errors).
+    assert "你的翻译有误" not in ai_msg, (
+        f"wrong-words header must not render when wrong=[]; got: {ai_msg!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_overall_correct_true_with_no_wrong_words_rewards_normally(setup):
+    """Backstop: the existing 'fully correct' path must NOT change. When
+    wrong=[] AND overall_correct=True (the default for a faithful translation),
+    apply_mastery_updates must still give every word +1. This guards against
+    accidentally widening the neutral-all branch to also fire on True."""
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="猫在床上",
+            wrong_words=[],
+            overall_correct=True,
+        ),
+        sentence_text="The cat is on the bed.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "overall-true"}},
+    )
+    cat_after_t1 = await setup.stats.get("cat")
+    assert cat_after_t1 is not None
+    cat_mastery_t1 = cat_after_t1["mastery_score"]
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="猫在床上")]},
+        config={"configurable": {"thread_id": "overall-true"}},
+    )
+    cat_after_t2 = await setup.stats.get("cat")
+    assert cat_after_t2["mastery_score"] == cat_mastery_t1 + 1, (
+        f"cat.mastery_score must increment by 1 on a fully-correct translation; "
+        f"was {cat_mastery_t1}, now {cat_after_t2['mastery_score']}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monkeypatch):
     """Regression: when validation fails after all retries, the agent must
     track exposure for words in the FINAL displayed sentence, not the

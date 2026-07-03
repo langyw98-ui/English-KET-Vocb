@@ -18,6 +18,15 @@ class BTPKetState(TypedDict):
     # lookup_target_meaning_node (idk intent) so format_output_text can
     # render "正确翻译：..." uniformly.
     sentence_translation: Optional[str]
+    # Sentence-level verdict from the translation evaluator. True when the
+    # kid's translation faithfully conveys the whole English sentence. The
+    # per-word wrong_words list catches misaligned/omitted words; this flag
+    # catches STRUCTURAL errors no single word owns — most commonly the kid
+    # adding content that isn't in the English original (e.g. "玩球" for
+    # "play") or distorting the sentence's overall meaning. None on
+    # non-translation intents; default True on the evaluator side so a
+    # missing/old field never falsely punishes.
+    overall_correct: Optional[bool]
     asked_word_meaning: Optional[str]
     target_word: Optional[str]
     last_target_word: Optional[str]

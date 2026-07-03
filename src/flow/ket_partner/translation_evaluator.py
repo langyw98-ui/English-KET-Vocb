@@ -11,6 +11,11 @@ METHOD (do this silently before filling the schema):
 1. ALIGN each English word in "Sentence words to check" to the kid's Chinese characters. Chinese word order differs from English — verbs often sit at the end or middle (e.g. "The cat slipped on the ice" → "猫 在冰上 滑倒"). Map each English word to the kid's characters that mean the SAME thing.
 2. A word is WRONG only if its aligned Chinese characters are missing or carry a different meaning. Synonyms are OK (猫=猫咪, 大=巨大).
 3. A word is NOT wrong if the kid's output contains its correct meaning — even when OTHER words in the sentence are wrong. This is the most common error: do not let one wrong word contaminate the verdict on its neighbors.
+4. SENTENCE-LEVEL CHECK (overall_correct): after the per-word pass, judge whether the kid's translation AS A WHOLE faithfully conveys the sentence's meaning. Set overall_correct=False when:
+   - The kid ADDED content that isn't in the English original and isn't a natural Chinese function word (了/的/着/了/吗 etc.). Example: kid wrote "玩球" (play ball) for "play" — the "球" is an invention, not a translation.
+   - The kid's translation badly distorts the sentence's meaning even though no single English word was misaligned (e.g. wrong tense that changes the event, swapped subject/object that flips who did what).
+   - The kid's output is too short or garbled to convey the sentence.
+   Set overall_correct=True only when the kid's translation is a faithful, complete rendering of the English sentence.
 
 WORD-LEVEL vs COMPOUND: judge each English word INDEPENDENTLY at the word level. When two adjacent English words form a compound (e.g. "snow mound" = 雪堆), do NOT give one word the meaning of the whole compound. "snow" means 雪; "mound" means 堆/土堆. If the kid wrote 雪人 (snowman) for "snow mound", the wrong word is `mound` (kid said 雪人, should be 雪堆), NOT `snow` — the kid's output clearly contains the 雪 character.
 
@@ -18,6 +23,7 @@ Each English word may appear in wrong_words AT MOST ONCE. Never emit two entries
 
 Then fill the schema:
 - correct_translation: full correct Chinese translation of the whole sentence in natural, kid-friendly Chinese.
+- overall_correct: True iff the kid's translation faithfully conveys the whole sentence meaning (see rule 4).
 - wrong_words: list of words the kid got wrong.
 
 For each wrong word:
@@ -31,6 +37,7 @@ WORKED EXAMPLE 1 (do not skip):
 - Kid's translation: "猫在冰上飞"  (fly)
 - Alignment: cat→猫 (correct); the→(article, Chinese omits, OK); slipped→飞 (WRONG: kid wrote "fly", should be "slip/slide"); on→在...上 (correct); ice→冰 (correct).
 - Correct wrong_words: [{word: "slipped", kid_translation: "飞", correct_translation: "滑倒"}].
+- overall_correct: False (the verb is wrong).
 - DO NOT flag "ice" — the kid wrote "冰" which is correct, even though the overall sentence has a wrong verb nearby.
 
 WORKED EXAMPLE 2 (compound alignment):
@@ -38,9 +45,18 @@ WORKED EXAMPLE 2 (compound alignment):
 - Kid's translation: "孩子们在寒冷的雪天里堆了一个雪人"
 - Alignment: children→孩子们 (correct); build→堆 (correct); a→一个 (OK); snow (first occurrence, in "snow mound")→雪 (correct, kid's 雪人 contains 雪); mound→雪人 (WRONG: kid wrote "snowman", should be "雪堆/pile"); in→里 (correct); the→(OK); cold→寒冷 (correct); snow (second occurrence)→雪天 (correct, kid used "snowy day" but 雪 is present).
 - Correct wrong_words: [{word: "mound", kid_translation: "雪人", correct_translation: "雪堆"}].
+- overall_correct: False (mound was wrong).
 - DO NOT flag "snow" — the kid wrote 雪 in both places. The wrong word is `mound`, NOT `snow`.
 
-If everything is correct, return an empty wrong_words list.
+WORKED EXAMPLE 3 (added content — the trap this rule exists to catch):
+- Sentence: "We can go out to play in the park."
+- Kid's translation: "我们可以到外面去公园玩球"
+- Alignment: we→我们 (correct); can→可以 (correct); go→到外面去 (correct); out→外面 (correct); to→(infinitive marker, OK); play→玩 (correct, but the kid ALSO wrote 球 which has no English source); in→(omitted, OK in Chinese); the→(article, OK); park→公园 (correct).
+- Correct wrong_words: [] (NO English word was misaligned — every word has its correct Chinese counterpart).
+- overall_correct: False (the kid added "球" = ball, which is not in the English original. "play" in this sentence is generic; "play ball" is a different activity. The translation conveys a different event than the original.)
+- correct_translation: "我们可以去公园里玩。"
+
+If everything is correct (faithful translation, no extra content, no critical omissions), return an empty wrong_words list AND overall_correct=True.
 """
 
 
@@ -53,6 +69,13 @@ class WrongWord(BaseModel):
 
 class TranslationEval(BaseModel):
     correct_translation: str
+    # True iff the kid's translation faithfully conveys the whole sentence
+    # meaning. The per-word wrong_words list catches misaligned/omitted
+    # words; overall_correct catches STRUCTURAL errors that no single word
+    # owns — most commonly the kid adding content that isn't in the English
+    # original (e.g. "玩球" for "play") or distorting the sentence's overall
+    # meaning. Default True so a missing/old field never falsely punishes.
+    overall_correct: bool = True
     wrong_words: List[WrongWord] = Field(default_factory=list)
 
 

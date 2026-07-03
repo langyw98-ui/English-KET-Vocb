@@ -131,6 +131,7 @@ class KETPartnerAgent:
         return {
             "wrong_words": [e.model_dump() for e in filtered],
             "sentence_translation": result.correct_translation,
+            "overall_correct": result.overall_correct,
         }
 
     async def lookup_target_meaning_node(self, state: BTPKetState) -> dict:
@@ -345,8 +346,9 @@ class KETPartnerAgent:
 
     async def explain_meaning_node(self, state: BTPKetState) -> dict:
         asked = state["asked_word"]
+        last = state.get("last_english_sentence") or ""
         meaning = state.get("asked_word_meaning", "")
-        text = f'"{asked}" 的意思是「{meaning}」。\n(继续翻译上句吧)'
+        text = f'"{asked}" 的意思是「{meaning}」。\n让我们继续吧，{last}。'
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
     async def redirect_to_translate_node(self, state: BTPKetState) -> dict:

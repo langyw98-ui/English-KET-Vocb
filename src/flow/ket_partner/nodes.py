@@ -9,6 +9,19 @@ async def apply_mastery_updates(state: dict, repos: Repos) -> None:
         # evaluate_translation_node, so all entries are KET canonical forms.
         last_words = state.get("last_sentence_words") or []
         wrong = {w["word"] for w in state.get("wrong_words") or []}
+        # Sentence-level verdict: when overall_correct=False and the per-word
+        # check found no misaligned words, the kid still got the sentence
+        # structurally wrong (most often by ADDING content with no English
+        # source, e.g. "玩球" for "play"). Rewarding every word with +1 here
+        # would treat a wrong turn as a right one. Give all words delta=0
+        # (neutral — no reward, no punishment, since no specific word is to
+        # blame). When wrong_words is non-empty, the structural error doesn't
+        # change per-word accounting: misaligned words still get -1, correctly
+        # aligned neighbors still get +1.
+        overall_correct = state.get("overall_correct")
+        neutral_all = (not wrong) and (overall_correct is False)
+        if neutral_all:
+            return
         for w in last_words:
             delta = -1 if w in wrong else 1
             await repos.stats.apply_delta(w, delta=delta, exposed=False)
@@ -35,6 +48,7 @@ def format_output_text(state: dict, new_sentence: str) -> str:
     if intent == "translation":
         wrong = state.get("wrong_words") or []
         sentence_t = state.get("sentence_translation", "")
+        overall_correct = state.get("overall_correct")
         if wrong:
             if sentence_t:
                 lines.append(f"正确翻译：{sentence_t}")
@@ -46,6 +60,14 @@ def format_output_text(state: dict, new_sentence: str) -> str:
                 # entirely — that's still a real error and must be surfaced,
                 # otherwise "你的翻译有误:" renders with no items below it.
                 lines.append(f" {word} 的意思是：{correct}")
+        elif overall_correct is False:
+            # Per-word check found nothing wrong, but the evaluator still
+            # flagged the sentence (kid added content with no English source,
+            # distorted the meaning, etc.). Without this branch the kid would
+            # see no feedback at all — no wrong_words, no correct translation.
+            if sentence_t:
+                lines.append(f"正确翻译：{sentence_t}")
+            lines.append("你的翻译和原句意思有些偏差。")
     elif intent == "idk":
         sentence_t = state.get("sentence_translation", "")
         if sentence_t:

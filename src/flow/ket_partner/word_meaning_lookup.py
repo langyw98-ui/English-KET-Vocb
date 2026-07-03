@@ -1,3 +1,4 @@
+import re
 from typing import Dict, List
 
 from langchain.messages import HumanMessage, SystemMessage
@@ -5,9 +6,29 @@ from pydantic import BaseModel, Field
 
 from flow.common import logger
 
-_SYSTEM = """You look up the Chinese meaning of an English word as used in a specific sentence.
-Give a concise, kid-friendly Chinese meaning (1-5 characters preferred). Output only the meaning.
+_SYSTEM = """你查询一个英语单词在特定句子中的中文意思。
+请给出简洁、适合儿童的中文释义（建议 1-5 个字）。
+
+关键要求：输出必须是中文汉字。禁止把英语单词原样返回。
+- "sea" → 海（正确）
+- "sea" → sea（禁止，这是英语单词本身，不是它的意思）
+- "apple" → 苹果（正确）
+- "apple" → apple（禁止）
+
+只输出中文释义，不要输出任何其他内容。
 """
+
+# Matches any Unicode CJK Unified Ideograph. Used to verify the LLM actually
+# returned Chinese rather than echoing the English word back. Observed in
+# production: kid asked about "sea", the LLM returned meaning="sea" — the
+# kid-facing message rendered as `「sea」的意思是「sea」`, completely useless.
+# Chinese prompts make this rarer but not impossible, so the check stays as
+# a defense in depth.
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _has_chinese(text: str) -> bool:
+    return bool(_CJK_RE.search(text or ""))
 
 
 class WordMeaning(BaseModel):
@@ -18,20 +39,36 @@ async def lookup_word_meaning(llm, sentence: str, word: str) -> WordMeaning:
     structured = llm.with_structured_output(WordMeaning, method="function_calling")
     messages = [
         SystemMessage(content=_SYSTEM),
-        HumanMessage(content=f"Sentence: {sentence}"),
-        HumanMessage(content=f"Word: {word}"),
+        HumanMessage(content=f"句子：{sentence}"),
+        HumanMessage(content=f"单词：{word}"),
     ]
     try:
-        return await structured.ainvoke(messages)
+        result = await structured.ainvoke(messages)
+        # Safety net: if the LLM echoed the English word (no Chinese chars),
+        # retry once — non-determinism often produces a correct translation
+        # on the second call. If the retry also lacks Chinese, fall back to
+        # a kid-visible failure marker rather than showing the English echo.
+        if not _has_chinese(result.meaning):
+            logger.debug(
+                f"lookup_word_meaning: first response lacks Chinese ({result.meaning!r}); retrying"
+            )
+            result = await structured.ainvoke(messages)
+            if not _has_chinese(result.meaning):
+                logger.warning(
+                    f"lookup_word_meaning: '{word}' lookup returned no Chinese after retry "
+                    f"(last={result.meaning!r}); using fallback"
+                )
+                return WordMeaning(meaning=f"({word} 词义查询失败)")
+        return result
     except Exception as e:
         logger.warning(f"lookup_word_meaning failed: {e}")
         return WordMeaning(meaning=f"({word} 词义查询失败)")
 
 
-_MULTI_SYSTEM = """You look up the Chinese meaning of several English words as each is used in ONE specific sentence.
-For each word, give a concise, kid-friendly Chinese meaning (1-5 characters preferred) that fits how the word is used in that sentence.
+_MULTI_SYSTEM = """你查询几个英语单词在同一个句子中的中文意思。
+每个单词请给出简洁、适合儿童的中文释义（建议 1-5 个字），需符合该单词在句子中的实际用法。
 
-Output one entry per requested word. The set of words in your output MUST exactly match the set of words given.
+每个被查询的单词输出一条记录。输出的单词集合必须与输入完全一致，禁止增删或遗漏单词。
 """
 
 
@@ -56,8 +93,8 @@ async def lookup_word_meanings(llm, sentence: str, words: List[str]) -> List[Dic
     structured = llm.with_structured_output(WordMeanings, method="function_calling")
     messages = [
         SystemMessage(content=_MULTI_SYSTEM),
-        HumanMessage(content=f"Sentence: {sentence}"),
-        HumanMessage(content=f"Words (look up each, in this sentence's context): {', '.join(words)}"),
+        HumanMessage(content=f"句子：{sentence}"),
+        HumanMessage(content=f"单词（在句子语境中查询每一个）：{', '.join(words)}"),
     ]
     try:
         result = await structured.ainvoke(messages)
@@ -69,8 +106,8 @@ async def lookup_word_meanings(llm, sentence: str, words: List[str]) -> List[Dic
         return [{"word": w, "meaning": ""} for w in words]
 
 
-_SENTENCE_SYSTEM = """Translate the English sentence into natural, kid-friendly Chinese.
-Output only the translation, nothing else."""
+_SENTENCE_SYSTEM = """把这个英语句子翻译成自然、适合儿童的中文。
+只输出翻译结果，不要输出任何其他内容。"""
 
 
 class SentenceTranslation(BaseModel):
@@ -85,7 +122,7 @@ async def lookup_sentence_translation(llm, sentence: str) -> SentenceTranslation
     structured = llm.with_structured_output(SentenceTranslation, method="function_calling")
     messages = [
         SystemMessage(content=_SENTENCE_SYSTEM),
-        HumanMessage(content=f"Sentence: {sentence}"),
+        HumanMessage(content=f"句子：{sentence}"),
     ]
     try:
         return await structured.ainvoke(messages)

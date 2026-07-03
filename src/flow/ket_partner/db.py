@@ -16,7 +16,7 @@ from flow.common import logger
 # short: 3 → 2 (sticky 'mastered' via _derive_status) → 1 ('learning') in
 # two wrong answers — so a kid who once knew a word but has drifted is
 # re-detected quickly and the word re-enters active practice.
-MASTERY_CAP = 3
+MASTERY_CAP = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ket_vocabulary (
