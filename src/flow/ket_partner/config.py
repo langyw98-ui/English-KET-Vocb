@@ -7,7 +7,7 @@ from pydantic import BaseModel
 class VocabRefillConfig(BaseModel):
     low_watermark: int = 5
     high_watermark: int = 10
-    interval_turns: int = 5
+    interval_turns: int = 3
 
 
 class SentenceConfig(BaseModel):

@@ -6,7 +6,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from flow.agent import memory
-from flow.common import logger, llm_flash, llm_plus
+from flow.common import logger, llm_flash, llm_max
 from flow.ket_partner.config import load_config
 from flow.ket_partner.db import Repos, init_db
 from flow.ket_partner.graph import route_after_init, route_by_intent
@@ -113,6 +113,18 @@ class KETPartnerAgent:
                     f"kid_translation matches correct_translation ({entry.kid_translation!r})"
                 )
                 continue
+            # Drop entries the evaluator couldn't give a clear Chinese
+            # meaning for. Common for function words (be/will/do/to) that
+            # fold into the sentence structure and have no single Chinese
+            # equivalent. Without this filter format_output renders an empty
+            # "be 的意思是：". The sentence-level overall_correct flag still
+            # captures that the kid's translation was off.
+            if not entry.correct_translation:
+                logger.debug(
+                    f"evaluate_translation_node: dropping '{entry.word}' — "
+                    f"empty correct_translation (likely a function word with no single Chinese equivalent)"
+                )
+                continue
             if entry.word in last_words_set:
                 key = entry.word
             else:
@@ -171,7 +183,7 @@ class KETPartnerAgent:
         # forces the LLM to pick different scaffolding.
         seen_non_ket_words: list = []
 
-        def _regen(hint: str = "", duplicate_sentence: str = "", target_split: bool = False):
+        def _regen(hint: str = "", duplicate_sentence: str = "", target_split: bool = False, rejected_sentence: str = ""):
             return generate_sentence(
                 self.llm_smart,
                 target=state["target_word"],
@@ -184,6 +196,7 @@ class KETPartnerAgent:
                 avoid_non_ket_words=seen_non_ket_words,
                 duplicate_sentence=duplicate_sentence,
                 target_split=target_split,
+                rejected_sentence=rejected_sentence,
             )
 
         sentence = await _regen()
@@ -236,7 +249,8 @@ class KETPartnerAgent:
                     if naturalness.ok:
                         break
                     naturalness_hint = naturalness.reason
-                    sentence = await _regen(hint=naturalness_hint, duplicate_sentence=duplicate_sentence)
+                    rejected = sentence
+                    sentence = await _regen(hint=naturalness_hint, duplicate_sentence=duplicate_sentence, rejected_sentence=rejected)
                     continue
                 # non_ket_count == 1: accept as-is, skip naturalness (no point
                 # judging a sentence the policy already chose to annotate).
@@ -262,9 +276,38 @@ class KETPartnerAgent:
                 target_split=is_target_split,
             )
         else:
-            logger.warning(f"sentence validation failed after retries; accepting current draft")
+            # Retry budget exhausted. Re-validate the FINAL draft so the
+            # warning carries actionable detail. Without this we'd be left
+            # with a generic "failed after retries" log and stale fields
+            # from the previous iteration (is_duplicate etc. referred to
+            # the prior sentence, not the one we're accepting) — making
+            # production issues impossible to diagnose.
             result = await validate_sentence(sentence, self.repos)
-            logger.debug(f"validate_sentence: {result} duplicate={is_duplicate}")
+            is_duplicate = sentence in self._recent_sentences
+            is_target_split = (
+                bool(target)
+                and " " in target.strip()
+                and target.lower() not in sentence.lower()
+            )
+            non_ket_count = len(result.non_ket_words)
+            reasons = []
+            if non_ket_count > 0:
+                reasons.append(f"{non_ket_count} non-KET word(s): {result.non_ket_words}")
+            if is_duplicate:
+                reasons.append("duplicate of a recent sentence")
+            if is_target_split:
+                reasons.append(f"multi-word target '{target}' split apart")
+            # All cheap-gate checks passed → naturalness was (or would
+            # have been) the rejection reason. Re-run to capture it.
+            if not reasons:
+                nat = await check_naturalness(self.llm_smart, sentence, age=age)
+                if not nat.ok:
+                    reasons.append(f"naturalness: {nat.reason}")
+            logger.warning(
+                f"sentence validation failed after {self.config.validate_retry_limit} retries; "
+                f"accepting current draft — reasons: {('; '.join(reasons)) or 'unknown'}; "
+                f"sentence={sentence!r}"
+            )
         self._recent_sentences.append(sentence)
         # Multi-word / non-alpha target patch. The validator tokenizes with
         # [A-Za-z']+, so targets like "MP3 player", "T-shirt", "ice cream" get
@@ -294,9 +337,21 @@ class KETPartnerAgent:
                 w for w in result.words_used
                 if w == target or w.lower() not in constituents
             ]
+            # Also strip constituents from non_ket_words. When the target is
+            # a multi-word KET entry like "lie down", the validator tokenizes
+            # it into ["lie", "down"]. "down" matches a KET entry, but "lie"
+            # might not (lie-alone isn't in KET vocab) — so "lie" lands in
+            # non_ket_words and gets separately annotated, even though in
+            # THIS sentence it's part of the target phrase. Same whitespace-
+            # split limitation as above (hyphenated targets still leak).
+            result.non_ket_words = [
+                w for w in result.non_ket_words
+                if w.lower() not in constituents
+            ]
             logger.debug(
                 f"multi-word target patch: added '{target}', "
-                f"final words_used={result.words_used}"
+                f"final words_used={result.words_used}, "
+                f"non_ket_words={result.non_ket_words}"
             )
         # Append to _recent_scaffolding AFTER the patch — otherwise the
         # in-place mutation + reassignment leaves the outer list pointing at
@@ -536,4 +591,4 @@ async def autonomous(info: dict, db_path: str = "ket_partner.db", csv_path: Opti
     # would restore it, classify_intent would default to translation/idk,
     # and the answer would leak).
     await repos.log.append_session_start()
-    return await build_agent(llm_flash, llm_plus, repos, info)
+    return await build_agent(llm_flash, llm_max, repos, info)

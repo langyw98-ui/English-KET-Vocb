@@ -19,8 +19,11 @@ Output: just the English sentence, nothing else.
 """
 
 _HINT_BLOCK = """
-Previous attempt rejected by naturalness check: {hint}
-Avoid that specific issue this time.
+Your previous attempt was rejected by the naturalness check:
+Previous sentence: "{rejected_sentence}"
+Rejection reason: {hint}
+
+Do NOT just change the subject, tense, or surrounding words while keeping the same problematic word combination — that is not a fix. Address the underlying collocation / word choice itself.
 """
 
 _NON_KET_BLOCK = """
@@ -61,11 +64,20 @@ async def generate_sentence(
     avoid_non_ket_words: list = None,
     duplicate_sentence: str = "",
     target_split: bool = False,
+    rejected_sentence: str = "",
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
     avoid_non_ket_words = avoid_non_ket_words or []
-    hint_block = _HINT_BLOCK.format(hint=naturalness_hint) if naturalness_hint else ""
+    # naturalness_hint and rejected_sentence arrive together — the hint is the
+    # judge's reason, rejected_sentence is the prior attempt's exact text.
+    # Showing the LLM what it just wrote (not just the abstract reason) makes
+    # the "don't reuse the same collocation" instruction concrete.
+    hint_block = (
+        _HINT_BLOCK.format(hint=naturalness_hint, rejected_sentence=rejected_sentence)
+        if naturalness_hint and rejected_sentence
+        else ""
+    )
     non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
     duplicate_block = _DUPLICATE_BLOCK.format(duplicate=duplicate_sentence) if duplicate_sentence else ""
     multi_word_note = _MULTI_WORD_NOTE if target and " " in target.strip() else ""

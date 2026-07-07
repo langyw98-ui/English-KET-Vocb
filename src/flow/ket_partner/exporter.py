@@ -32,6 +32,8 @@ def _classify(row: dict, cfg: KetConfig) -> str:
         return "unused"
     if row["status"] == "mastered":
         return "mastered"
+    if row["status"] == "learning":
+        return "learning"
     if (row["wrong_count"] >= cfg.struggling_threshold.wrong_count_min
         or (row["exposed_count"] >= cfg.struggling_threshold.exposed_count_min
             and row["mastery_score"] == 0)):
@@ -41,6 +43,7 @@ def _classify(row: dict, cfg: KetConfig) -> str:
 
 def _render_markdown(profile: dict, rows: List[dict], cfg: KetConfig) -> str:
     mastered = [r for r in rows if _classify(r, cfg) == "mastered"]
+    learning = [r for r in rows if _classify(r, cfg) == "learning"]
     used = [r for r in rows if _classify(r, cfg) == "used"]
     unused = [r for r in rows if _classify(r, cfg) == "unused"]
     struggling = [r for r in rows if _classify(r, cfg) == "struggling"]
@@ -48,10 +51,19 @@ def _render_markdown(profile: dict, rows: List[dict], cfg: KetConfig) -> str:
         f"# 学习报告 - {profile.get('nickname') or '小朋友'}",
         f"总轮数: {profile.get('total_turns', 0)}",
         "",
-        f"## 已掌握 ({len(mastered)} 词)",
+        f"## 正在学习 ({len(learning)} 词)",
         "| word | pos | exposed | correct | wrong | mastery |",
         "|---|---|---|---|---|---|",
     ]
+    for r in learning:
+        lines.append(
+            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
+        )
+    lines.append("")
+    lines.append(f"## 已掌握 ({len(mastered)} 词)")
+    lines.append("| word | pos | exposed | correct | wrong | mastery |")
+    lines.append("|---|---|---|---|---|---|")
     for r in mastered:
         lines.append(
             f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "

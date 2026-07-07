@@ -1,7 +1,8 @@
+import json
 from typing import List
 
 from langchain.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from flow.common import logger
 
@@ -13,7 +14,9 @@ METHOD (do this silently before filling the schema):
 3. A word is NOT wrong if the kid's output contains its correct meaning — even when OTHER words in the sentence are wrong. This is the most common error: do not let one wrong word contaminate the verdict on its neighbors.
 4. SENTENCE-LEVEL CHECK (overall_correct): after the per-word pass, judge whether the kid's translation AS A WHOLE faithfully conveys the sentence's meaning. Set overall_correct=False when:
    - The kid ADDED content that isn't in the English original and isn't a natural Chinese function word (了/的/着/了/吗 etc.). Example: kid wrote "玩球" (play ball) for "play" — the "球" is an invention, not a translation.
-   - The kid's translation badly distorts the sentence's meaning even though no single English word was misaligned (e.g. wrong tense that changes the event, swapped subject/object that flips who did what).
+   - The kid's translation badly distorts the sentence's meaning even though no single English word was misaligned. This includes:
+     - Wrong tense that changes the event, swapped subject/object that flips who did what.
+     - LITERAL TRANSLATION OF AN IDIOM OR FIXED COLLOCATION: when the English phrase means something other than the sum of its words (e.g. "had an accident with the milk" actually means 弄洒了/打翻了牛奶, NOT 和...发生了一个意外), a word-by-word rendering that misses the actual event must be flagged. Per-word alignment may look clean (accident→意外, had→发生) yet the Chinese does NOT convey what the English sentence means.
    - The kid's output is too short or garbled to convey the sentence.
    Set overall_correct=True only when the kid's translation is a faithful, complete rendering of the English sentence.
 
@@ -22,7 +25,7 @@ WORD-LEVEL vs COMPOUND: judge each English word INDEPENDENTLY at the word level.
 Each English word may appear in wrong_words AT MOST ONCE. Never emit two entries for the same word.
 
 Then fill the schema:
-- correct_translation: full correct Chinese translation of the whole sentence in natural, kid-friendly Chinese.
+- correct_translation: full correct Chinese translation of the whole sentence in NATURAL, native-sounding Chinese — NOT a word-by-word gloss that preserves English syntax. Restructure freely so the result reads like something a Chinese teacher would write. If a literal rendering sounds awkward (e.g. "爬得危险地高" for "climbed dangerously high"), rephrase it (e.g. "爬到了危险的高度"). Kid-friendly vocabulary, but never at the cost of naturalness.
 - overall_correct: True iff the kid's translation faithfully conveys the whole sentence meaning (see rule 4).
 - wrong_words: list of words the kid got wrong.
 
@@ -56,6 +59,13 @@ WORKED EXAMPLE 3 (added content — the trap this rule exists to catch):
 - overall_correct: False (the kid added "球" = ball, which is not in the English original. "play" in this sentence is generic; "play ball" is a different activity. The translation conveys a different event than the original.)
 - correct_translation: "我们可以去公园里玩。"
 
+WORKED EXAMPLE 4 (naturalness beats literalism — correct_translation must read like native Chinese, not a word-by-word gloss):
+- Sentence: "The monkey climbed dangerously high in the tree."
+- BAD literal correct_translation: "猴子在树上爬得危险地高。" — strings "dangerously" (危险地) and "high" (高) onto the "爬得..." pattern. Grammatical but no Chinese speaker says this; it sounds like machine translation.
+- GOOD natural correct_translation: "猴子在树上爬到了危险的高度。" — restructured as "climbed to a dangerous height". This is what a Chinese teacher would write.
+- correct_translation: "猴子在树上爬到了危险的高度。"
+- Note: this constraint applies to YOUR correct_translation field. Judge the kid's translation separately via the per-word + overall_correct rules above — do not let the kid's awkward wording leak into the example you produce.
+
 If everything is correct (faithful translation, no extra content, no critical omissions), return an empty wrong_words list AND overall_correct=True.
 """
 
@@ -77,6 +87,23 @@ class TranslationEval(BaseModel):
     # meaning. Default True so a missing/old field never falsely punishes.
     overall_correct: bool = True
     wrong_words: List[WrongWord] = Field(default_factory=list)
+
+    @field_validator("wrong_words", mode="before")
+    @classmethod
+    def _coerce_wrong_words(cls, v):
+        # qwen via dashscope function_calling occasionally emits wrong_words
+        # as a JSON-encoded STRING instead of an array (most often when the
+        # list is long or contains many special chars). The content inside
+        # is valid — just wrap-unwrapped. Parse it back to a list so the
+        # validation passes; unparseable strings fall through to the
+        # default_factory empty list via the except branch in evaluate_translation.
+        if isinstance(v, str):
+            try:
+                logger.debug(f"coercing wrong_words from string: {v}")
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return []
+        return v
 
 
 async def evaluate_translation(
