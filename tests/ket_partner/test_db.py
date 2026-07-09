@@ -114,7 +114,7 @@ async def test_import_csv_creates_one_row_per_context(temp_db_path):
         "SELECT context, pos FROM ket_vocabulary WHERE word='design' ORDER BY context"
     ) as cur:
         rows = await cur.fetchall()
-    assert rows == [
+    assert [tuple(r) for r in rows] == [
         ("", "v"),
         ("drawing", "n"),
         ("planning", "n"),
