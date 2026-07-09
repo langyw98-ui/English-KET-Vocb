@@ -941,19 +941,21 @@ async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypatch):
     """When a regen is triggered by an exact-match duplicate, the next
-    generate call must surface the offending sentence verbatim as
-    `duplicate_sentence` so the LLM gets an explicit "do not output that
-    exact sentence" callout — not just the soft avoid_sentences list."""
+    generate call must surface the offending sentence in `prior_attempts`
+    with reason_kind="duplicate" so the LLM gets an explicit "do not output
+    that exact sentence" callout — not just the soft avoid_sentences list."""
     from flow.ket_partner import agent as agent_module
     from flow.ket_partner.sentence_validator import ValidationResult
 
-    captured_kwargs: list = []
+    captured_attempts: list = []
     duplicate = "The cat likes to dance."
     # First call returns the duplicate; second call returns a fresh sentence.
     generate_seq = iter([duplicate, "The dog likes to swim."])
 
     async def fake_generate(*a, **kw):
-        captured_kwargs.append(kw.get("duplicate_sentence", ""))
+        # Snapshot the list — agent.py mutates it across retries, so the
+        # reference would otherwise show the final state on every entry.
+        captured_attempts.append(list(kw.get("prior_attempts") or []))
         return next(generate_seq)
 
     async def fake_validate(sentence, repos):
@@ -975,13 +977,20 @@ async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypat
         config={"configurable": {"thread_id": "dup-kwarg"}},
     )
 
-    # Initial call has no duplicate to call out (validation hasn't run yet).
-    assert captured_kwargs[0] == "", (
-        f"first generate call must have empty duplicate_sentence, got {captured_kwargs[0]!r}"
+    # Initial call has no prior attempts (validation hasn't run yet).
+    assert captured_attempts[0] == [], (
+        f"first generate call must start with empty prior_attempts, got {captured_attempts[0]!r}"
     )
-    # The retry call must surface the offending sentence verbatim.
-    assert captured_kwargs[1] == duplicate, (
-        f"regen call must pass duplicate_sentence={duplicate!r}, got {captured_kwargs[1]!r}"
+    # The retry call must surface the offending sentence as a duplicate entry.
+    assert len(captured_attempts[1]) == 1, (
+        f"regen call must have 1 prior attempt, got {len(captured_attempts[1])}"
+    )
+    entry = captured_attempts[1][0]
+    assert entry["sentence"] == duplicate, (
+        f"prior attempt must carry the duplicate sentence verbatim, got {entry.get('sentence')!r}"
+    )
+    assert entry["reason_kind"] == "duplicate", (
+        f"prior attempt reason_kind must be 'duplicate', got {entry.get('reason_kind')!r}"
     )
 
 
@@ -990,7 +999,8 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     """When the LLM emits a multi-word target's constituent words separated
     by other words ('He puts a CD into the old player.' for target 'CD
     player'), the retry loop must detect the missing contiguous substring
-    and force a regen with target_split=True."""
+    and record the failure in `prior_attempts` with reason_kind="target_split"
+    so the next regen's prompt surfaces the structural requirement."""
     from flow.ket_partner import agent as agent_module
     from flow.ket_partner.sentence_naturalness import NaturalnessResult
     from flow.ket_partner.sentence_validator import ValidationResult
@@ -1005,7 +1015,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     async def fake_generate(*a, **kw):
         captured.append({
             "sentence": next(generate_seq),
-            "target_split": kw.get("target_split", False),
+            "prior_attempts": list(kw.get("prior_attempts") or []),
         })
         return captured[-1]["sentence"]
 
@@ -1036,14 +1046,18 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     )
     ai_msg = result["messages"][-1].content
 
-    # Initial call must NOT carry target_split (validator hasn't run yet).
-    assert captured[0]["target_split"] is False, (
-        f"first call must have target_split=False, got {captured[0]!r}"
+    # Initial call has no prior attempts (validator hasn't run yet).
+    assert captured[0]["prior_attempts"] == [], (
+        f"first call must have empty prior_attempts, got {captured[0]!r}"
     )
-    # Retry call MUST carry target_split=True — the kid-facing output must
-    # contain the contiguous phrase from the second attempt.
-    assert captured[1]["target_split"] is True, (
-        f"regen call must signal target_split=True, got {captured[1]!r}"
+    # Retry call must carry the split failure in prior_attempts — the
+    # kid-facing output must contain the contiguous phrase from the second attempt.
+    assert len(captured[1]["prior_attempts"]) == 1, (
+        f"regen call must have 1 prior attempt, got {len(captured[1]['prior_attempts'])}"
+    )
+    entry = captured[1]["prior_attempts"][0]
+    assert entry["reason_kind"] == "target_split", (
+        f"prior attempt reason_kind must be 'target_split', got {entry.get('reason_kind')!r}"
     )
     assert "CD player" in ai_msg, (
         f"kid must see the contiguous phrase, got: {ai_msg!r}"
@@ -1277,7 +1291,7 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
     """Regression: 'The cold ice cream makes my nose move.' passes KET
     validation but is semantically nonsensical. The retry loop must call
     check_naturalness after KET+dedup pass, and on rejection, regenerate
-    with the rejection reason fed back into the prompt.
+    with the rejection reason fed back into the prompt via prior_attempts.
     """
     from flow.ket_partner import agent as agent_module
     from flow.ket_partner.sentence_naturalness import NaturalnessResult
@@ -1289,11 +1303,11 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
         "The cold ice cream makes my teeth hurt.",
     ])
 
-    captured_hints = []
+    captured_attempts = []
 
     async def fake_generate(*a, **kw):
-        # Record the naturalness_hint so we can verify the reason was fed back.
-        captured_hints.append(kw.get("naturalness_hint", ""))
+        # Snapshot prior_attempts so we can verify the reason was fed back.
+        captured_attempts.append(list(kw.get("prior_attempts") or []))
         return next(generate_seq)
 
     async def fake_validate(sentence, repos):
@@ -1326,10 +1340,21 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
     assert "teeth" in ai_msg, "naturalness rejection must trigger regen with a better sentence"
     assert "nose move" not in ai_msg, "the nonsensical first draft must not be shown"
 
-    # The hint must have been propagated to the second generate_sentence call.
-    assert len(captured_hints) >= 2, "generate_sentence must be called twice (initial + regen)"
-    assert captured_hints[1] == "ice cream does not make noses move", (
-        "the naturalness rejection reason must be fed back as naturalness_hint"
+    # The rejection reason must have been propagated to the second
+    # generate_sentence call via prior_attempts.
+    assert len(captured_attempts) >= 2, "generate_sentence must be called twice (initial + regen)"
+    assert captured_attempts[0] == [], (
+        f"first call must start with empty prior_attempts, got {captured_attempts[0]!r}"
+    )
+    assert len(captured_attempts[1]) == 1, (
+        f"regen call must have 1 prior attempt, got {len(captured_attempts[1])}"
+    )
+    entry = captured_attempts[1][0]
+    assert entry["reason_kind"] == "naturalness", (
+        f"prior attempt reason_kind must be 'naturalness', got {entry.get('reason_kind')!r}"
+    )
+    assert "ice cream does not make noses move" in entry["reason_detail"], (
+        f"naturalness rejection reason must be in reason_detail, got {entry.get('reason_detail')!r}"
     )
 
 
@@ -1555,3 +1580,213 @@ async def test_learning_count_excludes_exposed_words(setup):
     await repos.stats.increment_exposed("target_word", is_target=True)
     # learning_count must count only the target word
     assert await repos.stats.learning_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
+    """Smart fallback: when all 3 attempts fail with non_ket_overflow, the
+    agent must accept the one with the FEWEST non-KET words (least bad), not
+    the final draft. Implements the user spec: '如果存在非KET单词数量超限的
+    情况，应该输出这个句子' — picking the least-bad tolerable failure."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    # 3 attempts with non_ket_counts 4, 2, 3 — second is least bad.
+    sentence_seq = iter([
+        "alpha bravo charlie delta cat.",  # count=4
+        "alpha bravo cat bed.",  # count=2 (least bad, must be picked)
+        "alpha bravo charlie cat bed.",  # count=3 (final draft, must NOT be picked)
+    ])
+
+    async def fake_generate(*a, **kw):
+        return next(sentence_seq)
+
+    async def fake_validate(sentence, repos):
+        # Discriminate by structural marker words (all fake — the real
+        # validator would compute these from the vocab, but we control the
+        # counts to drive the fallback's tiebreaker).
+        if "delta" in sentence:
+            return ValidationResult(ok=False, words_used=["cat"], non_ket_words=["alpha", "bravo", "charlie", "delta"])
+        if "charlie" in sentence:
+            return ValidationResult(ok=False, words_used=["cat", "bed"], non_ket_words=["alpha", "bravo", "charlie"])
+        return ValidationResult(ok=False, words_used=["cat", "bed"], non_ket_words=["alpha", "bravo"])
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+
+    async def fake_select(repos, profile, cfg):
+        return "cat"
+    monkeypatch.setattr(agent_module, "select_target_word", fake_select)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "overflow-fallback"}},
+    )
+    ai_msg = result["messages"][-1].content
+    # The kid must see the LEAST-BAD sentence (count=2, "alpha bravo cat bed."),
+    # NOT the count=4 attempt NOR the final count=3 draft.
+    assert "delta" not in ai_msg, "must NOT show the count=4 attempt"
+    assert "charlie" not in ai_msg, "must NOT show the final count=3 draft"
+    assert "alpha" in ai_msg and "bravo" in ai_msg, (
+        "must show the least-bad count=2 attempt"
+    )
+
+
+@pytest.mark.asyncio
+async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
+    """Smart fallback: when ALL attempts fail with naturalness (no overflow),
+    the agent must switch to a different target word and run a fresh retry
+    cycle. The kid sees the new word's sentence, NOT any of the original
+    word's failed attempts. Implements the user spec: '如果3次都是因为表达
+    不自然，则应该换个词重新尝试生成'."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    # Word 1 ("cat"): 3 attempts all fail naturalness → switch.
+    # Word 2 ("dog"): 1 attempt passes naturalness → return.
+    cat_seq = iter([
+        "the cat alpha.",
+        "the cat bravo.",
+        "the cat charlie.",
+    ])
+    dog_sentence = "the dog is on the bed."
+
+    select_calls: list = []
+
+    async def fake_select(repos, profile, cfg):
+        # First call (from select_target_word_node) returns "cat"; second
+        # call (from _generate_with_fallback's word-switch branch) returns "dog".
+        if not select_calls:
+            select_calls.append("cat")
+            return "cat"
+        select_calls.append("dog")
+        return "dog"
+
+    async def fake_generate(*a, **kw):
+        target = kw.get("target")
+        if target == "cat":
+            return next(cat_seq)
+        return dog_sentence
+
+    async def fake_validate(sentence, repos):
+        # All sentences pass KET validation — naturalness is the ONLY gate.
+        if "cat" in sentence:
+            return ValidationResult(ok=True, words_used=["the", "cat"], non_ket_words=[])
+        return ValidationResult(ok=True, words_used=["the", "dog", "is", "on", "the", "bed"], non_ket_words=[])
+
+    async def fake_naturalness(llm, sentence, age=8):
+        if "cat" in sentence:
+            return NaturalnessResult(ok=False, reason="cat sentences are unnatural in this test")
+        return NaturalnessResult(ok=True, reason="")
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+    monkeypatch.setattr(agent_module, "select_target_word", fake_select)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "word-switch"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # select_target_word must be called exactly twice (initial "cat", then "dog").
+    assert select_calls == ["cat", "dog"], (
+        f"select_target_word must be called twice (cat→dog), got {select_calls}"
+    )
+    # The kid must see the dog sentence (after the switch), NOT any cat sentence.
+    assert "dog" in ai_msg, "kid must see the switched word's sentence"
+    assert "alpha" not in ai_msg and "bravo" not in ai_msg and "charlie" not in ai_msg, (
+        "must NOT show any of the original word's failed attempts"
+    )
+    # persist_turn_node must log the switched target_word ("dog"), not "cat".
+    recent = await setup.log.recent(limit=5)
+    ai_rows = [r for r in recent if r["role"] == "ai"]
+    assert ai_rows, "persist_turn_node must log an AI message"
+    assert ai_rows[-1]["target_words"] == ["dog"], (
+        f"persist_turn_node must log target_word='dog' after switch, got {ai_rows[-1]['target_words']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_word_switch_only_once(setup, monkeypatch):
+    """Word switch is bounded to ONCE. If the switched-to word also fails all
+    3 attempts on naturalness, the agent must NOT switch again — it accepts
+    the final draft. This prevents infinite loops in the fallback path."""
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    # Word 1 ("cat"): 3 attempts all fail naturalness → switch to "dog".
+    # Word 2 ("dog"): 3 attempts all fail naturalness → accept final draft.
+    cat_seq = iter([
+        "the cat alpha.",
+        "the cat bravo.",
+        "the cat charlie.",
+    ])
+    dog_seq = iter([
+        "the dog alpha.",
+        "the dog bravo.",
+        "the dog charlie.",
+    ])
+
+    select_calls: list = []
+    word_seq = iter(["cat", "dog"])
+
+    async def fake_select(repos, profile, cfg):
+        # First call returns "cat"; second call returns "dog"; any further
+        # call (which would be a third switch attempt) returns None-equivalent
+        # — but the agent must never make that third call.
+        word = next(word_seq, None)
+        if word is not None:
+            select_calls.append(word)
+        return word if word is not None else "cat"
+
+    async def fake_generate(*a, **kw):
+        target = kw.get("target")
+        if target == "cat":
+            return next(cat_seq)
+        return next(dog_seq)
+
+    async def fake_validate(sentence, repos):
+        if "cat" in sentence:
+            return ValidationResult(ok=True, words_used=["the", "cat"], non_ket_words=[])
+        return ValidationResult(ok=True, words_used=["the", "dog"], non_ket_words=[])
+
+    # Naturalness: ALWAYS fails — forces both cycles to exhaust retries.
+    async def fake_naturalness(llm, sentence, age=8):
+        return NaturalnessResult(ok=False, reason="test forces naturalness failure")
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+    monkeypatch.setattr(agent_module, "select_target_word", fake_select)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 2
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "switch-once"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # select_target_word must be called exactly TWICE (cat→dog), not a third time.
+    assert select_calls == ["cat", "dog"], (
+        f"word switch must be bounded to once — select_target_word must not be called a third time, got {select_calls}"
+    )
+    # After the second cycle fails, the agent accepts the final draft (a dog sentence).
+    assert "dog" in ai_msg, "kid must see the switched word's final draft"
+    assert "the dog charlie." in ai_msg, (
+        "must show the final draft of the switched word's cycle, not an earlier attempt"
+    )

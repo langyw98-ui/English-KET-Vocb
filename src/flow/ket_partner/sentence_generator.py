@@ -14,16 +14,13 @@ Constraints:
 - Must be NATURAL and make real-world sense. Subject-verb-object must reflect how things actually behave. No nonsense like "ice cream makes my nose move" or "the book sings".
 - Playful or imaginative situations are fine, but only if internally coherent.
 - NO emoji, NO Chinese.
-{target_split_block}{duplicate_block}{non_ket_block}{hint_block}
+{history_block}{non_ket_block}{target_split_block}
 Output: just the English sentence, nothing else.
 """
 
-_HINT_BLOCK = """
-Your previous attempt was rejected by the naturalness check:
-Previous sentence: "{rejected_sentence}"
-Rejection reason: {hint}
-
-Do NOT just change the subject, tense, or surrounding words while keeping the same problematic word combination — that is not a fix. Address the underlying collocation / word choice itself.
+_HISTORY_BLOCK = """
+Your previous attempts were all rejected. Do NOT repeat the same mistakes — address each rejection's underlying issue (do not just change the subject or surrounding words while keeping the same problematic collocation / word choice):
+{history}
 """
 
 _NON_KET_BLOCK = """
@@ -31,10 +28,10 @@ Previous attempt(s) used these non-KET words — do NOT use them again, pick KET
 {words}
 """
 
-_DUPLICATE_BLOCK = """
-Your previous attempt was a WORD-FOR-WORD DUPLICATE of a recent sentence:
-{duplicate}
-That exact sentence is forbidden. Do NOT output it again — change the wording, subject, or scene.
+_TARGET_SPLIT_BLOCK = """
+At least one previous attempt SPLIT the target phrase — its words did NOT appear contiguously in the sentence.
+The target "{target}" MUST appear as a single inseparable unit, with its words side-by-side in the same order.
+Rewrite the sentence so the target phrase is intact.
 """
 
 # Inline note appended to the target line when the target is a multi-word
@@ -43,13 +40,14 @@ That exact sentence is forbidden. Do NOT output it again — change the wording,
 # the target phrase never appears contiguously, so stats tracking misses it.
 _MULTI_WORD_NOTE = " The target is a MULTI-WORD phrase — its words MUST appear contiguously in the sentence, side-by-side in the same order. Do NOT split them with other words."
 
-# Retry hint when the previous attempt split the target phrase. Stronger
-# than the initial note because the LLM has already failed the constraint.
-_TARGET_SPLIT_BLOCK = """
-Your previous attempt SPLIT the target phrase — its words did NOT appear contiguously in the sentence.
-The target "{target}" MUST appear as a single inseparable unit, with its words side-by-side in the same order.
-Rewrite the sentence so the target phrase is intact.
-"""
+
+def _format_history(attempts: list) -> str:
+    if not attempts:
+        return ""
+    lines = []
+    for i, a in enumerate(attempts, 1):
+        lines.append(f'  {i}. "{a["sentence"]}" — Reason: {a["reason_detail"]}')
+    return "\n".join(lines)
 
 
 async def generate_sentence(
@@ -60,28 +58,25 @@ async def generate_sentence(
     min_words: int,
     max_words: int,
     avoid_sentences: list = None,
-    naturalness_hint: str = "",
+    prior_attempts: list = None,
     avoid_non_ket_words: list = None,
-    duplicate_sentence: str = "",
-    target_split: bool = False,
-    rejected_sentence: str = "",
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
+    prior_attempts = prior_attempts or []
     avoid_non_ket_words = avoid_non_ket_words or []
-    # naturalness_hint and rejected_sentence arrive together — the hint is the
-    # judge's reason, rejected_sentence is the prior attempt's exact text.
-    # Showing the LLM what it just wrote (not just the abstract reason) makes
-    # the "don't reuse the same collocation" instruction concrete.
-    hint_block = (
-        _HINT_BLOCK.format(hint=naturalness_hint, rejected_sentence=rejected_sentence)
-        if naturalness_hint and rejected_sentence
+    history_block = _HISTORY_BLOCK.format(history=_format_history(prior_attempts)) if prior_attempts else ""
+    non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
+    multi_word_note = _MULTI_WORD_NOTE if target and " " in target.strip() else ""
+    # target_split_block fires if ANY prior attempt split the target — the LLM
+    # tends to repeat the split pattern across retries when the target is a
+    # multi-word phrase, so a single earlier split is enough to warrant the
+    # strong reminder on every subsequent regen.
+    target_split_block = (
+        _TARGET_SPLIT_BLOCK.format(target=target)
+        if any(a.get("reason_kind") == "target_split" for a in prior_attempts)
         else ""
     )
-    non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
-    duplicate_block = _DUPLICATE_BLOCK.format(duplicate=duplicate_sentence) if duplicate_sentence else ""
-    multi_word_note = _MULTI_WORD_NOTE if target and " " in target.strip() else ""
-    target_split_block = _TARGET_SPLIT_BLOCK.format(target=target) if target_split else ""
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
@@ -90,10 +85,9 @@ async def generate_sentence(
         recent=", ".join(recent_scaffolding) or "(none yet)",
         avoid="\n".join(f"  - {s}" for s in avoid_sentences) or "(none yet)",
         multi_word_note=multi_word_note,
-        target_split_block=target_split_block,
-        duplicate_block=duplicate_block,
-        hint_block=hint_block,
+        history_block=history_block,
         non_ket_block=non_ket_block,
+        target_split_block=target_split_block,
     )
     messages = [
         SystemMessage(content=system_text),
@@ -106,4 +100,4 @@ async def generate_sentence(
         return response.content.strip()
     except Exception as e:
         logger.warning(f"generate_sentence failed: {e}")
-        return f"I see a {target}."  # 兜底
+        return f"I see a {target}."

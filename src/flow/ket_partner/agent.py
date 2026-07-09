@@ -175,139 +175,13 @@ class KETPartnerAgent:
         # sentences). Now: list[list[str]] outer, flattened here.
         avoid_words = [w for sent_words in self._recent_scaffolding[-window:] for w in sent_words]
         avoid_sentences = list(self._recent_sentences[-window:])
-        # Non-KET words encountered across this turn's retry attempts. The
-        # LLM frequently reuses the same non-KET word on every regen (e.g.,
-        # "blocks" when target is "build") because the target naturally
-        # co-occurs with it — burning the retry budget and producing
-        # near-duplicate sentences. Surfacing them as "do not reuse" hints
-        # forces the LLM to pick different scaffolding.
-        seen_non_ket_words: list = []
+        profile = await self.repos.profile.get()
 
-        def _regen(hint: str = "", duplicate_sentence: str = "", target_split: bool = False, rejected_sentence: str = ""):
-            return generate_sentence(
-                self.llm_smart,
-                target=state["target_word"],
-                recent_scaffolding=avoid_words,
-                age=age,
-                min_words=self.config.sentence.min_words,
-                max_words=self.config.sentence.max_words,
-                avoid_sentences=avoid_sentences,
-                naturalness_hint=hint,
-                avoid_non_ket_words=seen_non_ket_words,
-                duplicate_sentence=duplicate_sentence,
-                target_split=target_split,
-                rejected_sentence=rejected_sentence,
-            )
+        sentence, result, final_target = await self._generate_with_fallback(
+            state["target_word"], avoid_words, avoid_sentences, age, profile
+        )
+        target = final_target
 
-        sentence = await _regen()
-        result = None
-        naturalness_hint = ""
-        target = state["target_word"]
-        # Acceptance policy (per user spec):
-        #   - non-KET count ≤ 1 → ACCEPT (annotate the lone non-KET word)
-        #   - non-KET count > 1 → regen
-        #   - duplicate → regen
-        #   - multi-word target phrase split apart → regen
-        #   - naturalness fail → regen with hint
-        # After retries exhaust, accept whatever we have and annotate any
-        # remaining non-KET words (1 or many) so the kid can still translate.
-        for _ in range(self.config.validate_retry_limit):
-            result = await validate_sentence(sentence, self.repos)
-            is_duplicate = sentence in self._recent_sentences
-            non_ket_count = len(result.non_ket_words)
-            # Multi-word target presence check. When the target is a phrase
-            # like "CD player" / "ice cream", the LLM frequently emits the
-            # constituent words separated by other words ("He puts a CD into
-            # the old player."). The downstream patch that force-includes
-            # the target in words_used only fires on a contiguous substring
-            # match, so a split target would slip through untracked. Catch
-            # it here and force a regen with a targeted hint.
-            is_target_split = (
-                bool(target)
-                and " " in target.strip()
-                and target.lower() not in sentence.lower()
-            )
-            logger.debug(
-                f"validate_sentence: {result} duplicate={is_duplicate} target_split={is_target_split}"
-            )
-            # Surface the offending sentence verbatim when THIS attempt is a
-            # duplicate, so the LLM gets a hard "do not output that exact
-            # sentence" callout instead of relying solely on the soft
-            # avoid_sentences list. Reset each iteration — a dup signal from
-            # an earlier retry shouldn't bleed into a later retry triggered
-            # by a different reason (non-KET or naturalness).
-            duplicate_sentence = sentence if is_duplicate else ""
-            if non_ket_count <= 1 and not is_duplicate and not is_target_split:
-                # Cheap gate: either all-KET, or a single tolerable non-KET word.
-                # If there's 1 non-KET word, accept and annotate after the loop.
-                if non_ket_count == 0:
-                    # Only run the expensive naturalness LLM check on sentences
-                    # that fully passed the cheap KET gate — otherwise we'd
-                    # burn budget annotating+judging sentences we'll regen.
-                    naturalness = await check_naturalness(self.llm_smart, sentence, age=age)
-                    logger.debug(f"check_naturalness: ok={naturalness.ok} reason={naturalness.reason!r}")
-                    if naturalness.ok:
-                        break
-                    naturalness_hint = naturalness.reason
-                    rejected = sentence
-                    sentence = await _regen(hint=naturalness_hint, duplicate_sentence=duplicate_sentence, rejected_sentence=rejected)
-                    continue
-                # non_ket_count == 1: accept as-is, skip naturalness (no point
-                # judging a sentence the policy already chose to annotate).
-                logger.debug(f"accept: 1 non-KET word ({result.non_ket_words[0]}) — will annotate")
-                break
-            # One of: > 1 non-KET, duplicate, or split target. All warrant a regen.
-            if is_target_split:
-                logger.debug(f"regen: multi-word target '{target}' was split apart in the sentence")
-            elif is_duplicate:
-                logger.debug(f"regen: sentence is a duplicate of a recent one")
-            else:
-                logger.debug(f"regen: {non_ket_count} non-KET words (>1)")
-            # Accumulate this attempt's non-KET words so the next regen
-            # prompt can list them as off-limits. Applies to all paths —
-            # duplicate / split-target sentences often share the same non-KET
-            # vocabulary the LLM keeps reaching for.
-            for w in result.non_ket_words:
-                if w not in seen_non_ket_words:
-                    seen_non_ket_words.append(w)
-            sentence = await _regen(
-                hint=naturalness_hint,
-                duplicate_sentence=duplicate_sentence,
-                target_split=is_target_split,
-            )
-        else:
-            # Retry budget exhausted. Re-validate the FINAL draft so the
-            # warning carries actionable detail. Without this we'd be left
-            # with a generic "failed after retries" log and stale fields
-            # from the previous iteration (is_duplicate etc. referred to
-            # the prior sentence, not the one we're accepting) — making
-            # production issues impossible to diagnose.
-            result = await validate_sentence(sentence, self.repos)
-            is_duplicate = sentence in self._recent_sentences
-            is_target_split = (
-                bool(target)
-                and " " in target.strip()
-                and target.lower() not in sentence.lower()
-            )
-            non_ket_count = len(result.non_ket_words)
-            reasons = []
-            if non_ket_count > 0:
-                reasons.append(f"{non_ket_count} non-KET word(s): {result.non_ket_words}")
-            if is_duplicate:
-                reasons.append("duplicate of a recent sentence")
-            if is_target_split:
-                reasons.append(f"multi-word target '{target}' split apart")
-            # All cheap-gate checks passed → naturalness was (or would
-            # have been) the rejection reason. Re-run to capture it.
-            if not reasons:
-                nat = await check_naturalness(self.llm_smart, sentence, age=age)
-                if not nat.ok:
-                    reasons.append(f"naturalness: {nat.reason}")
-            logger.warning(
-                f"sentence validation failed after {self.config.validate_retry_limit} retries; "
-                f"accepting current draft — reasons: {('; '.join(reasons)) or 'unknown'}; "
-                f"sentence={sentence!r}"
-            )
         self._recent_sentences.append(sentence)
         # Multi-word / non-alpha target patch. The validator tokenizes with
         # [A-Za-z']+, so targets like "MP3 player", "T-shirt", "ice cream" get
@@ -377,12 +251,240 @@ class KETPartnerAgent:
             annotations = await lookup_word_meanings(
                 self.llm_flash, sentence, result.non_ket_words
             )
-        return {
+        update = {
             "last_sentence_words": result.words_used,
             "last_english_sentence": sentence,
             "_exposure_recorded": True,
             "non_ket_annotations": annotations,
         }
+        # If the fallback switched the target word, propagate the new target
+        # to state so persist_turn_node logs the correct target_words and
+        # downstream nodes see the word that was actually practiced.
+        if target != state["target_word"]:
+            update["target_word"] = target
+        return update
+
+    async def _validate_and_categorize(self, sentence: str, target: str, age: int) -> dict:
+        """Validate a sentence and categorize its failure (if any).
+
+        Centralizes the validate + classify logic that the retry loop uses on
+        every attempt. Returns a dict with:
+        - result: ValidationResult from validate_sentence
+        - passed: True if the sentence passes all gates (KET + dedup + target
+          contiguity + naturalness)
+        - reason_kind: None if passed, else one of "naturalness",
+          "non_ket_overflow", "duplicate", "target_split"
+        - reason_detail: human-readable explanation (empty if passed)
+        - non_ket_words / non_ket_count: from the ValidationResult
+        - is_duplicate / is_target_split: the structural gate flags
+        """
+        result = await validate_sentence(sentence, self.repos)
+        is_duplicate = sentence in self._recent_sentences
+        non_ket_count = len(result.non_ket_words)
+        is_target_split = (
+            bool(target)
+            and " " in target.strip()
+            and target.lower() not in sentence.lower()
+        )
+
+        passed = False
+        reason_kind = None
+        reason_detail = ""
+
+        if non_ket_count <= 1 and not is_duplicate and not is_target_split:
+            if non_ket_count == 0:
+                # Only run the expensive naturalness LLM check on sentences
+                # that fully passed the cheap KET gate — otherwise we'd
+                # burn budget judging sentences we'll regen anyway.
+                naturalness = await check_naturalness(self.llm_smart, sentence, age=age)
+                logger.debug(
+                    f"validate_sentence: {result} duplicate={is_duplicate} "
+                    f"target_split={is_target_split} naturalness_ok={naturalness.ok}"
+                )
+                if naturalness.ok:
+                    passed = True
+                else:
+                    reason_kind = "naturalness"
+                    reason_detail = f"unnatural expression — {naturalness.reason}"
+            else:
+                # non_ket_count == 1: accept as-is, skip naturalness (no point
+                # judging a sentence the policy already chose to annotate).
+                logger.debug(f"{result} accept: 1 non-KET word will annotate")
+                passed = True
+        else:
+            logger.debug(
+                f"validate_sentence: {result} duplicate={is_duplicate} target_split={is_target_split}"
+            )
+            if is_target_split:
+                reason_kind = "target_split"
+                reason_detail = f"split the multi-word target '{target}' — words must be contiguous"
+            elif is_duplicate:
+                reason_kind = "duplicate"
+                reason_detail = "word-for-word duplicate of a recent sentence"
+            else:
+                reason_kind = "non_ket_overflow"
+                reason_detail = f"non-KET words {result.non_ket_words} exceed the limit (max 1 allowed)"
+
+        return {
+            "result": result,
+            "passed": passed,
+            "reason_kind": reason_kind,
+            "reason_detail": reason_detail,
+            "non_ket_words": list(result.non_ket_words),
+            "non_ket_count": non_ket_count,
+            "is_duplicate": is_duplicate,
+            "is_target_split": is_target_split,
+            "sentence": sentence,
+        }
+
+    async def _generate_with_fallback(
+        self,
+        initial_target: str,
+        avoid_words: list,
+        avoid_sentences: list,
+        age: int,
+        profile: dict,
+    ):
+        """Generate a sentence with retry + smart fallback.
+
+        Returns (sentence, validation_result, final_target).
+        `final_target` differs from `initial_target` when a word switch occurred.
+
+        Retry policy (per user spec):
+        - Each attempt is validated; on failure the (sentence, reason) is
+          appended to `attempts` and fed back to the next regen's prompt
+          via prior_attempts — the LLM sees ALL prior failures, not just
+          the latest.
+        - After retries exhaust:
+          * If any attempt had non_ket_overflow (>1 non-KET words), pick
+            the one with the FEWEST non-KET words (tie → latest) and accept
+            it — non-KET overflow is a tolerable failure (natural English
+            with some unknown words the kid can still translate via the
+            annotations).
+          * Elif ALL attempts were naturalness fails AND we haven't yet
+            switched the target word, call select_target_word again and
+            run a full retry cycle with the new word. Bounded to ONE switch
+            so we can't loop forever.
+          * Otherwise (mixed failures, or word already switched and still
+            failing), accept the final draft.
+        """
+        target = initial_target
+        word_switched = False
+
+        while True:
+            attempts: list[dict] = []
+            seen_non_ket_words: list = []
+
+            def _regen():
+                return generate_sentence(
+                    self.llm_smart,
+                    target=target,
+                    recent_scaffolding=avoid_words,
+                    age=age,
+                    min_words=self.config.sentence.min_words,
+                    max_words=self.config.sentence.max_words,
+                    avoid_sentences=avoid_sentences,
+                    prior_attempts=attempts,
+                    avoid_non_ket_words=seen_non_ket_words,
+                )
+
+            sentence = await _regen()
+            result = None
+
+            for _ in range(self.config.validate_retry_limit):
+                check = await self._validate_and_categorize(sentence, target, age)
+                result = check["result"]
+                if check["passed"]:
+                    return sentence, result, target  # SUCCESS
+                attempts.append({
+                    "sentence": sentence,
+                    "reason_kind": check["reason_kind"],
+                    "reason_detail": check["reason_detail"],
+                    "non_ket_words": check["non_ket_words"],
+                    "non_ket_count": check["non_ket_count"],
+                })
+                # Accumulate non-KET words across retries — the LLM frequently
+                # reuses the same non-KET word (e.g. "blocks" for "build")
+                # because the target naturally co-occurs with it. Surfacing
+                # them as off-limits forces different scaffolding.
+                for w in check["non_ket_words"]:
+                    if w not in seen_non_ket_words:
+                        seen_non_ket_words.append(w)
+                sentence = await _regen()
+
+            # Retries exhausted — validate the final draft and record its
+            # outcome (the for-loop's last iteration did `sentence = _regen()`
+            # but never validated that new sentence).
+            check = await self._validate_and_categorize(sentence, target, age)
+            result = check["result"]
+            if check["passed"]:
+                return sentence, result, target  # SUCCESS (final draft passed)
+            attempts.append({
+                "sentence": sentence,
+                "reason_kind": check["reason_kind"],
+                "reason_detail": check["reason_detail"],
+                "non_ket_words": check["non_ket_words"],
+                "non_ket_count": check["non_ket_count"],
+            })
+
+            # Smart fallback.
+            overflow_attempts = [a for a in attempts if a["reason_kind"] == "non_ket_overflow"]
+            all_naturalness = bool(attempts) and all(
+                a["reason_kind"] == "naturalness" for a in attempts
+            )
+
+            if overflow_attempts:
+                # Pick the one with fewest non-KET words (least bad). Tie →
+                # latest attempt: min() on reversed() returns the last element
+                # among those tied at the minimum, so the kid sees the most
+                # recent LLM output (which has seen the most prior feedback).
+                best = min(reversed(overflow_attempts), key=lambda a: a["non_ket_count"])
+                sentence = best["sentence"]
+                result = await validate_sentence(sentence, self.repos)
+                logger.warning(
+                    f"sentence validation: accepting non-KET overflow draft after "
+                    f"{len(attempts)} attempts (non_ket_count={len(result.non_ket_words)}); "
+                    f"sentence={sentence!r}"
+                )
+                return sentence, result, target
+            elif all_naturalness and not word_switched:
+                # All naturalness fails — the LLM can't produce a natural
+                # sentence for this target. Switch to a different word and
+                # give it a fresh retry cycle.
+                logger.info(
+                    f"all {len(attempts)} attempts failed on naturalness; "
+                    f"switching target word from '{target}'"
+                )
+                new_word = await select_target_word(self.repos, profile, self.config)
+                if new_word == target:
+                    logger.warning(
+                        f"could not find a different target word; "
+                        f"accepting final draft: {sentence!r}"
+                    )
+                    return sentence, result, target
+                target = new_word
+                word_switched = True
+                continue  # restart while loop with new word, fresh attempts
+            else:
+                # Mixed failures (duplicate/target_split/naturalness mix
+                # without overflow) OR word already switched and still
+                # failing — accept the final draft.
+                reasons = []
+                if check["non_ket_count"] > 1:
+                    reasons.append(f"{check['non_ket_count']} non-KET word(s): {check['non_ket_words']}")
+                if check["is_duplicate"]:
+                    reasons.append("duplicate of a recent sentence")
+                if check["is_target_split"]:
+                    reasons.append(f"multi-word target '{target}' split apart")
+                if not reasons:
+                    # naturalness was the reason (already in attempts)
+                    reasons.append(f"naturalness: {check['reason_detail']}")
+                logger.warning(
+                    f"sentence validation failed after {len(attempts)} attempts; "
+                    f"accepting current draft — reasons: {('; '.join(reasons)) or 'unknown'}; "
+                    f"sentence={sentence!r}"
+                )
+                return sentence, result, target
 
     async def format_output_node(self, state: BTPKetState) -> dict:
         # Read the sentence from last_english_sentence (set by

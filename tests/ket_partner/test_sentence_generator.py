@@ -124,9 +124,9 @@ async def test_generate_sentence_prompt_omits_non_ket_block_when_empty():
 
 
 @pytest.mark.asyncio
-async def test_generate_sentence_prompt_calls_out_duplicate_when_set():
+async def test_generate_sentence_prompt_lists_prior_duplicate_attempt():
     """Regen after an exact-match duplicate: the offending sentence must
-    surface as a dedicated callout so the LLM understands which exact
+    surface in the prior-attempts history so the LLM understands which exact
     wording to avoid — not just the soft avoid_sentences list."""
     llm = _make_llm("A fresh new sentence.")
     await generate_sentence(
@@ -136,18 +136,24 @@ async def test_generate_sentence_prompt_calls_out_duplicate_when_set():
         age=8,
         min_words=5,
         max_words=12,
-        duplicate_sentence="The cat runs fast.",
+        prior_attempts=[
+            {
+                "sentence": "The cat runs fast.",
+                "reason_kind": "duplicate",
+                "reason_detail": "word-for-word duplicate of a recent sentence",
+            }
+        ],
     )
     bound = llm.bind.return_value
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "The cat runs fast." in system_text
-    assert "DUPLICATE" in system_text
+    assert "word-for-word duplicate" in system_text
 
 
 @pytest.mark.asyncio
-async def test_generate_sentence_prompt_omits_duplicate_block_when_empty():
-    """First attempt (no duplicate yet): block should not render."""
+async def test_generate_sentence_prompt_omits_history_when_no_prior_attempts():
+    """First attempt (no prior failures): history block should not render."""
     llm = _make_llm("A fresh new sentence.")
     await generate_sentence(
         llm,
@@ -160,7 +166,44 @@ async def test_generate_sentence_prompt_omits_duplicate_block_when_empty():
     bound = llm.bind.return_value
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
-    assert "DUPLICATE" not in system_text
+    assert "Your previous attempts" not in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_lists_all_prior_attempts():
+    """Every prior failed attempt (sentence + reason) must appear in the
+    prompt — not just the latest. This is the core change: the LLM sees the
+    full failure history so it can avoid repeating any of them."""
+    llm = _make_llm("A fresh new sentence.")
+    await generate_sentence(
+        llm,
+        target="build",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        prior_attempts=[
+            {
+                "sentence": "Let us build a tall tower with blocks.",
+                "reason_kind": "non_ket_overflow",
+                "reason_detail": "non-KET words ['tower', 'blocks'] exceed the limit (max 1 allowed)",
+            },
+            {
+                "sentence": "We build a house of bricks today.",
+                "reason_kind": "naturalness",
+                "reason_detail": "unnatural expression — house of bricks sounds odd",
+            },
+        ],
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    # Both sentences must appear verbatim.
+    assert "Let us build a tall tower with blocks." in system_text
+    assert "We build a house of bricks today." in system_text
+    # Both reasons must appear.
+    assert "non-KET words" in system_text
+    assert "house of bricks sounds odd" in system_text
 
 
 @pytest.mark.asyncio
@@ -203,10 +246,10 @@ async def test_generate_sentence_prompt_omits_multi_word_note_for_single_word():
 
 
 @pytest.mark.asyncio
-async def test_generate_sentence_prompt_calls_out_target_split_when_set():
+async def test_generate_sentence_prompt_calls_out_target_split_when_prior_attempt_split():
     """Regen after the LLM split a multi-word target: the prompt must surface
     the failure as a dedicated callout so the LLM understands the structural
-    requirement it just violated."""
+    requirement it just violated. Fires when ANY prior attempt was a split."""
     llm = _make_llm("She has a new CD player.")
     await generate_sentence(
         llm,
@@ -215,7 +258,13 @@ async def test_generate_sentence_prompt_calls_out_target_split_when_set():
         age=8,
         min_words=5,
         max_words=12,
-        target_split=True,
+        prior_attempts=[
+            {
+                "sentence": "He puts a CD into the old player.",
+                "reason_kind": "target_split",
+                "reason_detail": "split the multi-word target 'CD player' — words must be contiguous",
+            }
+        ],
     )
     bound = llm.bind.return_value
     sent_messages = bound.ainvoke.call_args.args[0]
@@ -225,8 +274,8 @@ async def test_generate_sentence_prompt_calls_out_target_split_when_set():
 
 
 @pytest.mark.asyncio
-async def test_generate_sentence_prompt_omits_target_split_block_when_false():
-    """target_split=False (initial draft or non-split regen): block must not render."""
+async def test_generate_sentence_prompt_omits_target_split_block_when_no_split_history():
+    """No prior target_split attempt: block must not render."""
     llm = _make_llm("The cat runs.")
     await generate_sentence(
         llm,
@@ -235,7 +284,6 @@ async def test_generate_sentence_prompt_omits_target_split_block_when_false():
         age=8,
         min_words=5,
         max_words=12,
-        target_split=False,
     )
     bound = llm.bind.return_value
     sent_messages = bound.ainvoke.call_args.args[0]
