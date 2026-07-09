@@ -29,7 +29,13 @@ class BTPKetState(TypedDict):
     overall_correct: Optional[bool]
     asked_word_meaning: Optional[str]
     target_word: Optional[str]
+    # Context of the current target word. Only target words carry real
+    # context; scaffolding words always use context="" (Spec §4.3).
+    target_context: Optional[str]
     last_target_word: Optional[str]
+    # Context of the previous turn's target. Used by evaluate_translation_node
+    # to thread context into the evaluator prompt (Spec §7.4).
+    last_target_context: Optional[str]
     last_sentence_words: Optional[List[str]]
     topic: Optional[str]
     profile_strategy: Optional[str]
