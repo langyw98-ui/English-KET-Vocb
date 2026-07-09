@@ -415,7 +415,7 @@ class Repos:
         await self._db.close()
 
 
-_DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "ket_vocabulary.csv")
+_DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "KET_vocabulary.csv")
 
 
 async def init_db(db_path: str, csv_path: Optional[str] = None) -> Repos:
