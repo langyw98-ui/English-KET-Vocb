@@ -52,10 +52,22 @@ async def test_init_db_creates_tables(temp_db_path):
         rows = await cur.fetchall()
     table_names = {r[0] for r in rows}
     assert "ket_vocabulary" in table_names
-    assert "ket_word_topics" in table_names
+    assert "ket_vocab_topics" in table_names   # renamed from ket_word_topics
     assert "vocab_stats" in table_names
     assert "conversation_log" in table_names
     assert "kid_profile" in table_names
+    assert "ket_word_topics" not in table_names   # old name must be gone
+
+
+@pytest.mark.asyncio
+async def test_ket_vocabulary_uses_composite_pk(temp_db_path):
+    """Spec §2.1: ket_vocabulary PK is (word, context). Verifying via PRAGMA
+    because a wrong PK silently breaks INSERT OR IGNORE uniqueness."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    async with repos.vocab._db.execute("PRAGMA table_info(ket_vocabulary)") as cur:
+        rows = await cur.fetchall()
+    pk_cols = {r[1] for r in rows if r[5] != 0}   # r[5] is pk flag
+    assert pk_cols == {"word", "context"}
 
 
 @pytest.mark.asyncio

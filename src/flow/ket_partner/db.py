@@ -20,29 +20,34 @@ MASTERY_CAP = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ket_vocabulary (
-    word    TEXT PRIMARY KEY,
+    word    TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
     pos     TEXT,
-    is_seed INTEGER DEFAULT 0
+    is_seed INTEGER DEFAULT 0,
+    PRIMARY KEY (word, context)
 );
 CREATE INDEX IF NOT EXISTS idx_vocab_seed ON ket_vocabulary(is_seed);
 
-CREATE TABLE IF NOT EXISTS ket_word_topics (
-    word  TEXT NOT NULL,
-    topic TEXT NOT NULL,
-    PRIMARY KEY (word, topic),
-    FOREIGN KEY (word) REFERENCES ket_vocabulary(word)
+CREATE TABLE IF NOT EXISTS ket_vocab_topics (
+    word    TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
+    topic   TEXT NOT NULL,
+    PRIMARY KEY (word, context, topic)
 );
-CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON ket_word_topics(topic);
+CREATE INDEX IF NOT EXISTS idx_vocab_topics_topic ON ket_vocab_topics(topic);
+CREATE INDEX IF NOT EXISTS idx_vocab_topics_lookup ON ket_vocab_topics(word, context);
 
 CREATE TABLE IF NOT EXISTS vocab_stats (
-    word              TEXT PRIMARY KEY,
-    exposed_count     INTEGER DEFAULT 0,
-    correct_count     INTEGER DEFAULT 0,
-    wrong_count       INTEGER DEFAULT 0,
-    mastery_score     INTEGER DEFAULT 0,
-    status            TEXT DEFAULT 'new',
-    first_seen_at     TIMESTAMP,
-    last_seen_at      TIMESTAMP
+    word          TEXT NOT NULL,
+    context       TEXT NOT NULL DEFAULT '',
+    exposed_count INTEGER DEFAULT 0,
+    correct_count INTEGER DEFAULT 0,
+    wrong_count   INTEGER DEFAULT 0,
+    mastery_score INTEGER DEFAULT 0,
+    status        TEXT DEFAULT 'new',
+    first_seen_at TIMESTAMP,
+    last_seen_at  TIMESTAMP,
+    PRIMARY KEY (word, context)
 );
 CREATE INDEX IF NOT EXISTS idx_stats_status ON vocab_stats(status);
 
