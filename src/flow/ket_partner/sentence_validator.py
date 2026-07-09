@@ -36,9 +36,9 @@ def _candidate_roots(token: str) -> list:
     (the, is, cat) are in the KET vocabulary directly. If that doesn't match,
     fall back to: explicit _LEMMAS entries (irregulars like went→go), then
     rule-based suffix stripping (wears→wear, cats→cat). The validator asks
-    `get_ket_word` for each candidate in order — first match wins, which
-    prevents over-stemming (e.g., "bins" → tries "bin" only if "bin" is
-    actually a known word).
+    `get_ket_word_any_context` for each candidate in order — first match
+    wins, which prevents over-stemming (e.g., "bins" → tries "bin" only if
+    "bin" is actually a known word).
     """
     lower = token.lower()
     candidates = [lower]
@@ -101,9 +101,9 @@ async def validate_sentence(sentence: str, repos) -> ValidationResult:
         # casing — e.g. the pronoun "I", not "i").
         ket_root = None
         for c in candidates:
-            canonical = await repos.vocab.get_ket_word(c)
-            if canonical is not None:
-                ket_root = canonical
+            wr = await repos.vocab.get_ket_word_any_context(c)
+            if wr is not None:
+                ket_root = wr.word   # WordRef.word — canonical form
                 break
         if ket_root is not None:
             words_used.append(ket_root)

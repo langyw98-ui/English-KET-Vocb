@@ -9,36 +9,36 @@ from flow.ket_partner.sentence_validator import validate_sentence
 @pytest.fixture
 async def repos(temp_db_path):
     csv_text = (
-        "word,part_of_speech,topic\n"
-        "cat,n,Animals\n"
-        "dog,n,Animals\n"
-        "big,adj,\n"
-        "small,adj,\n"
-        "happy,adj,\n"
-        "is,v,\n"
-        "am,v,\n"
-        "are,v,\n"
-        "go,v,Action\n"
-        "I,pron,\n"
-        "the,det,\n"
-        "a,det,\n"
-        "on,prep,\n"
-        "bed,n,\n"
-        "hat,n,Clothing\n"
-        "cake,n,Food\n"
-        "wear,v,Clothing\n"
-        "watch,v,Action\n"
-        "walk,v,Action\n"
-        "run,v,Action\n"
-        "bake,v,Food\n"
-        "bake,v,Food\n"
-        "story,n,Reading\n"
-        "try,v,Action\n"
-        "large,adj,Size\n"
-        "make,v,Action\n"
-        "rain,n,Weather\n"
-        "grass,n,Nature\n"
-        "wet,adj,\n"
+        "word,part_of_speech,topic,context\n"
+        "cat,n,Animals,\n"
+        "dog,n,Animals,\n"
+        "big,adj,,\n"
+        "small,adj,,\n"
+        "happy,adj,,\n"
+        "is,v,,\n"
+        "am,v,,\n"
+        "are,v,,\n"
+        "go,v,Action,\n"
+        "I,pron,,\n"
+        "the,det,,\n"
+        "a,det,,\n"
+        "on,prep,,\n"
+        "bed,n,,\n"
+        "hat,n,Clothing,\n"
+        "cake,n,Food,\n"
+        "wear,v,Clothing,\n"
+        "watch,v,Action,\n"
+        "walk,v,Action,\n"
+        "run,v,Action,\n"
+        "bake,v,Food,\n"
+        "bake,v,Food,\n"
+        "story,n,Reading,\n"
+        "try,v,Action,\n"
+        "large,adj,Size,\n"
+        "make,v,Action,\n"
+        "rain,n,Weather,\n"
+        "grass,n,Nature,\n"
+        "wet,adj,,\n"
     )
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
@@ -162,3 +162,20 @@ async def test_validate_pronoun_I_case_insensitive(repos):
     r = await validate_sentence("I am big.", repos)
     assert r.ok is True, f"'I' must match the vocab row stored as 'I'; got non_ket={r.non_ket_words}"
     assert "I" in r.words_used, "canonical form 'I' must be recorded, not lowercase 'i'"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_word_with_only_specific_contexts_as_ket(repos):
+    """Spec §8.2: smart has only (smart, clever) and (smart, stylish) —
+    no (smart, '') row. The validator must still recognize 'smart' as KET
+    by using get_ket_word_any_context. Without this, sentences containing
+    smart get force-regenerated or annotated as non-KET."""
+    # Inject the smart rows directly (fixture above doesn't include them).
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('smart', 'clever', 'adj', 0), ('smart', 'stylish', 'adj', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The smart dog runs.", repos)
+    assert r.ok is True, f"smart must be KET; got non_ket={r.non_ket_words}"
+    assert "smart" in r.words_used
