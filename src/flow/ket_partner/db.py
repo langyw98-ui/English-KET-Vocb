@@ -415,7 +415,7 @@ class Repos:
         await self._db.close()
 
 
-_DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "KET_vocabulary.csv")
+_DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "ket_vocabulary.csv")
 
 
 async def init_db(db_path: str, csv_path: Optional[str] = None) -> Repos:
@@ -434,27 +434,28 @@ async def init_db(db_path: str, csv_path: Optional[str] = None) -> Repos:
 
 
 async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         count = 0
         for row in reader:
             word = (row.get("word") or "").strip()
             pos = (row.get("part_of_speech") or "").strip()
             topic_raw = (row.get("topic") or "").strip()
+            context = (row.get("context") or "").strip()
             if not word:
                 continue
+            topics = [t.strip() for t in topic_raw.split(";") if t.strip()]
             await db.execute(
-                "INSERT OR IGNORE INTO ket_vocabulary (word, pos, is_seed) VALUES (?, ?, 0)",
-                (word, pos),
+                "INSERT OR IGNORE INTO ket_vocabulary (word, context, pos, is_seed) "
+                "VALUES (?, ?, ?, 0)",
+                (word, context, pos),
             )
-            if topic_raw:
-                for t in topic_raw.split(";"):
-                    t = t.strip()
-                    if t:
-                        await db.execute(
-                            "INSERT OR IGNORE INTO ket_word_topics (word, topic) VALUES (?, ?)",
-                            (word, t),
-                        )
+            for t in topics:
+                await db.execute(
+                    "INSERT OR IGNORE INTO ket_vocab_topics (word, context, topic) "
+                    "VALUES (?, ?, ?)",
+                    (word, context, t),
+                )
             count += 1
         await db.commit()
-        logger.info(f"Imported {count} words from {csv_path}")
+        logger.info(f"Imported {count} rows from {csv_path}")

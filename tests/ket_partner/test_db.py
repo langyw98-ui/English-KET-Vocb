@@ -73,10 +73,10 @@ async def test_ket_vocabulary_uses_composite_pk(temp_db_path):
 @pytest.mark.asyncio
 async def test_import_csv_splits_multi_topic(temp_db_path):
     csv_text = (
-        "word,part_of_speech,topic\n"
-        "cat,n,Animals\n"
-        '"bank","n","Finance; Geography"' + "\n"
-        "the,det,\n"
+        "word,part_of_speech,topic,context\n"
+        "cat,n,Animals,\n"
+        '"bank","n","Finance; Geography",""\n'
+        "the,det,,\n"
     )
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
@@ -92,6 +92,72 @@ async def test_import_csv_splits_multi_topic(temp_db_path):
 
     topics_for_the = await repos.vocab.get_topics_for_word("the")
     assert topics_for_the == []
+
+
+@pytest.mark.asyncio
+async def test_import_csv_creates_one_row_per_context(temp_db_path):
+    """Spec §3.1: design has 4 CSV rows with different context values → 4
+    distinct (word, context) PKs in ket_vocabulary."""
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "design,n,,planning\n"
+        "design,n,,process\n"
+        "design,n,Entertainment and Media,drawing\n"
+        "design,v,,\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    async with repos.vocab._db.execute(
+        "SELECT context, pos FROM ket_vocabulary WHERE word='design' ORDER BY context"
+    ) as cur:
+        rows = await cur.fetchall()
+    assert rows == [
+        ("", "v"),
+        ("drawing", "n"),
+        ("planning", "n"),
+        ("process", "n"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_import_csv_handles_bom(temp_db_path):
+    """Spec §1: file ships with ﻿ BOM. utf-8 reads first column as
+    '﻿word' → DictReader returns None for 'word' key → all rows
+    skipped silently."""
+    csv_text = (
+        "﻿word,part_of_speech,topic,context\n"
+        "cat,n,Animals,\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    wr = await repos.vocab.get_ket_word("cat")
+    assert wr is not None, "BOM must not prevent 'cat' from being read"
+
+
+@pytest.mark.asyncio
+async def test_import_csv_links_topic_to_specific_context(temp_db_path):
+    """Spec §2.2: topic belongs to a (word, context) pair, not to 'word'.
+    smart/clever has topic Education; smart/stylish does not."""
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "smart,adj,,stylish\n"
+        'smart,adj,"Education",clever\n'
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    clever_topics = await repos.vocab.get_topics_for_word("smart", context="clever")
+    stylish_topics = await repos.vocab.get_topics_for_word("smart", context="stylish")
+    assert "Education" in clever_topics
+    assert stylish_topics == []
 
 
 @pytest.mark.asyncio
