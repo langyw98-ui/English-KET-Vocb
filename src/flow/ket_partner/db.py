@@ -3,7 +3,7 @@ import json
 import sqlite3
 from datetime import datetime
 from os.path import dirname, join
-from typing import List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 import aiosqlite
 
@@ -407,9 +407,16 @@ class LogRepo:
         role: str,
         content: str,
         words_used: Optional[List[str]] = None,
-        target_words: Optional[List[str]] = None,
+        target_words: Optional[List[Dict[str, str]]] = None,
         turn_id: Optional[int] = None,
     ) -> None:
+        """Append a row to conversation_log.
+
+        target_words entries carry shape {"word": str, "context": str}
+        (context defaults to "" if absent) so init_state can recover both
+        fields when rehydrating across turns. Storage is unchanged —
+        json.dumps handles dicts the same way it handled bare strings.
+        """
         await self._db.execute(
             "INSERT INTO conversation_log (role, content, words_used, target_words, turn_id) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -451,6 +458,9 @@ class LogRepo:
         Only AI rows AFTER the most recent such marker are considered.
         If no marker exists yet (fresh DB), all AI rows are eligible —
         backward compat for databases populated before this feature.
+
+        Returns dict with keys: content (str), words_used (List[str]),
+        target_words (List[Dict[str, str]] — each entry {"word","context"}).
         """
         async with self._db.execute(
             "SELECT content, words_used, target_words FROM conversation_log "

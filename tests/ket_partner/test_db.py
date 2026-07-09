@@ -620,3 +620,19 @@ async def test_oldest_learning_word_returns_wordref(temp_db_path):
     await repos.stats.increment_exposed("cat", is_target=True)
     result = await repos.stats.oldest_learning_word()
     assert result == WordRef(word="cat", context="")
+
+
+@pytest.mark.asyncio
+async def test_log_append_persists_target_words_with_context(temp_db_path):
+    """Spec §5.3: target_words is now List[{'word':..., 'context':...}]
+    so the cross-turn rehydration in init_state can recover both fields."""
+    repos = await init_db(temp_db_path, csv_path=None)
+    await repos.log.append(
+        "ai",
+        "The smart kid.",
+        words_used=["the", "smart", "kid"],
+        target_words=[{"word": "smart", "context": "clever"}],
+        turn_id=1,
+    )
+    last = await repos.log.last_ai_message()
+    assert last["target_words"] == [{"word": "smart", "context": "clever"}]
