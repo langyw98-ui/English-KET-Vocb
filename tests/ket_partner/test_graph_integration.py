@@ -6,7 +6,7 @@ import pytest
 from langchain.messages import AIMessage, HumanMessage
 
 from flow.ket_partner.agent import build_agent
-from flow.ket_partner.db import init_db
+from flow.ket_partner.db import WordRef, init_db
 from flow.ket_partner.input_classifier import IntentClassification
 from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.translation_evaluator import TranslationEval
@@ -42,7 +42,7 @@ def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translati
 
 @pytest.fixture
 async def setup(temp_db_path):
-    csv_text = "word,part_of_speech,topic\ncat,n,Animals\ndog,n,Animals\nbed,n,Home\nthe,det,\non,prep,\nin,prep,\nbox,n,\nis,v,\n"
+    csv_text = "word,part_of_speech,topic,context\ncat,n,Animals,\ndog,n,Animals,\nbed,n,Home,\nthe,det,,\non,prep,,\nin,prep,,\nbox,n,,\nis,v,,\n"
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
@@ -133,8 +133,10 @@ async def test_idk_deducts_target_only(setup):
     history = await setup.log.recent(limit=20)
     ai_messages = [h for h in history if h["role"] == "ai"]
     assert ai_messages, "expected at least one AI message"
-    t1_target = ai_messages[0]["target_words"][0] if ai_messages[0]["target_words"] else None
-    assert t1_target is not None, "turn 1 should have set a target word"
+    # Task 5 changed target_words log shape from [str] to [{"word":..., "context":...}].
+    t1_entry = ai_messages[0]["target_words"][0] if ai_messages[0]["target_words"] else None
+    assert t1_entry is not None, "turn 1 should have set a target word"
+    t1_target = t1_entry["word"]
 
     # After idk, the turn-1 target should have wrong_count >= 1
     target_stats = await setup.stats.get(t1_target)
@@ -353,8 +355,15 @@ async def test_asks_meaning_does_not_re_expose_words(setup):
 @pytest.mark.asyncio
 async def test_asks_meaning_non_ket_word_does_not_deduct(setup):
     """R4 / I2: asking about a NON-KET word (e.g. a proper noun like
-    'Beijing') must NOT deduct mastery — apply_mastery_updates guards with
-    `is_ket_word`. The CSV in this fixture does not contain 'beijing'."""
+    'Beijing') must NOT deduct mastery — apply_mastery_updates' canonical
+    lookup returns None for words absent from ket_vocabulary, so no
+    apply_delta runs. The CSV in this fixture does not contain 'beijing'.
+
+    Note (Task 4): the §4.4 orphan guard means apply_delta('beijing', ...)
+    silently no-ops (no (beijing, '') vocab row), so we can no longer seed
+    a prior stats row to compare against. The test instead verifies the
+    stronger post-guard invariant: asking about a non-KET word creates NO
+    stats row at all."""
     llm = _mock_llm_seq(
         intent_resp=IntentClassification(intent="asks_meaning", asked_word="beijing"),
         meaning_resp=WordMeaning(meaning="北京"),
@@ -367,12 +376,6 @@ async def test_asks_meaning_non_ket_word_does_not_deduct(setup):
         {"messages": [HumanMessage(content="hi")]},
         config={"configurable": {"thread_id": "nonket"}},
     )
-    # Seed a 'beijing' stats row so we can detect any deduction.
-    await setup.stats.apply_delta("beijing", delta=0, exposed=False)
-    beijing_before = await setup.stats.get("beijing")
-    assert beijing_before is not None
-    score_before = beijing_before["mastery_score"]
-    wrong_before = beijing_before["wrong_count"]
 
     # Turn 2: ask about a non-KET word.
     await agent.ainvoke(
@@ -380,12 +383,11 @@ async def test_asks_meaning_non_ket_word_does_not_deduct(setup):
         config={"configurable": {"thread_id": "nonket"}},
     )
 
+    # No stats row should exist for 'beijing' — canonical lookup returned
+    # None, so apply_delta was never called.
     beijing_after = await setup.stats.get("beijing")
-    assert beijing_after["mastery_score"] == score_before, (
-        "asking about a non-KET word must not change mastery_score (I2)"
-    )
-    assert beijing_after["wrong_count"] == wrong_before, (
-        "asking about a non-KET word must not change wrong_count (I2)"
+    assert beijing_after is None, (
+        f"asking about a non-KET word must not create a stats row (I2); got {beijing_after!r}"
     )
 
 
@@ -1037,7 +1039,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     # Override the target via the select_target_word node — easiest path is to
     # monkeypatch select_target_word to return our target.
     async def fake_select(repos, profile, cfg):
-        return "CD player"
+        return WordRef(word="CD player", context="")
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     result = await graph.ainvoke(
@@ -1413,7 +1415,7 @@ async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monke
     from flow.ket_partner import vocab_selector
 
     async def fake_pick_new_word(repos, profile):
-        return "cat"
+        return WordRef(word="cat", context="")
 
     monkeypatch.setattr(vocab_selector, "_pick_new_word", fake_pick_new_word)
 
@@ -1460,16 +1462,16 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
     from flow.ket_partner.sentence_naturalness import NaturalnessResult
 
     csv_text = (
-        "word,part_of_speech,topic\n"
-        "MP3 player,n,Technology\n"
-        "player,n,Sport\n"
-        "she,pron,\n"
-        "listen,v,Action\n"
-        "to,prep,\n"
-        "music,n,Art\n"
-        "on,prep,\n"
-        "her,det,\n"
-        "new,adj,\n"
+        "word,part_of_speech,topic,context\n"
+        "MP3 player,n,Technology,\n"
+        "player,n,Sport,\n"
+        "she,pron,,\n"
+        "listen,v,Action,\n"
+        "to,prep,,\n"
+        "music,n,Art,\n"
+        "on,prep,,\n"
+        "her,det,,\n"
+        "new,adj,,\n"
     )
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
@@ -1482,7 +1484,7 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
         return sentence
 
     async def fake_pick_new_word(repos, profile):
-        return "MP3 player"
+        return WordRef(word="MP3 player", context="")
 
     async def fake_naturalness(*a, **kw):
         return NaturalnessResult(ok=True, reason="")
@@ -1570,14 +1572,19 @@ async def test_passive_exposed_word_can_graduate_to_mastered(setup):
 async def test_learning_count_excludes_exposed_words(setup):
     """Refill-mode counting must skip 'exposed' words — only target-exposed
     words count toward the learning pool. This is the core fix that prevents
-    scaffolding from prematurely triggering high_watermark."""
+    scaffolding from prematurely triggering high_watermark.
+
+    Note (Task 4): apply_delta/increment_exposed now apply the §4.4 orphan
+    guard — words without a (word, '') row in ket_vocabulary are silently
+    skipped. So the scaffolding words MUST come from the CSV (cat/dog/bed)
+    instead of arbitrary strings like 'alpha'."""
     repos = setup
-    # 3 scaffolding-only exposures
-    await repos.stats.increment_exposed("alpha")
-    await repos.stats.increment_exposed("bravo")
-    await repos.stats.increment_exposed("charlie")
+    # 3 scaffolding-only exposures (CSV words so the orphan guard admits them)
+    await repos.stats.increment_exposed("cat")
+    await repos.stats.increment_exposed("dog")
+    await repos.stats.increment_exposed("bed")
     # 1 target exposure
-    await repos.stats.increment_exposed("target_word", is_target=True)
+    await repos.stats.increment_exposed("box", is_target=True)
     # learning_count must count only the target word
     assert await repos.stats.learning_count() == 1
 
@@ -1615,7 +1622,7 @@ async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     async def fake_select(repos, profile, cfg):
-        return "cat"
+        return WordRef(word="cat", context="")
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
@@ -1659,13 +1666,14 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
     select_calls: list = []
 
     async def fake_select(repos, profile, cfg):
-        # First call (from select_target_word_node) returns "cat"; second
-        # call (from _generate_with_fallback's word-switch branch) returns "dog".
+        # First call (from select_target_word_node) returns cat; second
+        # call (from _generate_with_fallback's word-switch branch) returns dog.
+        # Task 7: select_target_word now returns WordRef, not str.
         if not select_calls:
             select_calls.append("cat")
-            return "cat"
+            return WordRef(word="cat", context="")
         select_calls.append("dog")
-        return "dog"
+        return WordRef(word="dog", context="")
 
     async def fake_generate(*a, **kw):
         target = kw.get("target")
@@ -1709,10 +1717,11 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
         "must NOT show any of the original word's failed attempts"
     )
     # persist_turn_node must log the switched target_word ("dog"), not "cat".
+    # Task 5: target_words log shape is now [{"word":..., "context":...}].
     recent = await setup.log.recent(limit=5)
     ai_rows = [r for r in recent if r["role"] == "ai"]
     assert ai_rows, "persist_turn_node must log an AI message"
-    assert ai_rows[-1]["target_words"] == ["dog"], (
+    assert ai_rows[-1]["target_words"] == [{"word": "dog", "context": ""}], (
         f"persist_turn_node must log target_word='dog' after switch, got {ai_rows[-1]['target_words']}"
     )
 
@@ -1743,13 +1752,15 @@ async def test_word_switch_only_once(setup, monkeypatch):
     word_seq = iter(["cat", "dog"])
 
     async def fake_select(repos, profile, cfg):
-        # First call returns "cat"; second call returns "dog"; any further
+        # First call returns cat; second call returns dog; any further
         # call (which would be a third switch attempt) returns None-equivalent
         # — but the agent must never make that third call.
+        # Task 7: select_target_word now returns WordRef, not str.
         word = next(word_seq, None)
         if word is not None:
             select_calls.append(word)
-        return word if word is not None else "cat"
+            return WordRef(word=word, context="")
+        return WordRef(word="cat", context="")
 
     async def fake_generate(*a, **kw):
         target = kw.get("target")

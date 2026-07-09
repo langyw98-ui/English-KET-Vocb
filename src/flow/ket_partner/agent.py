@@ -64,7 +64,14 @@ class KETPartnerAgent:
         if last_ai:
             update["last_english_sentence"] = last_ai["content"]
             update["last_sentence_words"] = last_ai["words_used"]
-            update["last_target_word"] = last_ai["target_words"][0] if last_ai["target_words"] else None
+            if last_ai["target_words"]:
+                update["last_target_word"] = last_ai["target_words"][0].get("word")
+                update["last_target_context"] = last_ai["target_words"][0].get("context", "")
+            else:
+                update["last_target_word"] = None
+                update["last_target_context"] = None
+        else:
+            update["last_target_context"] = None
         return update
 
     async def classify_intent_node(self, state: BTPKetState) -> dict:
@@ -79,6 +86,7 @@ class KETPartnerAgent:
             sentence=state["last_english_sentence"],
             words=state["last_sentence_words"],
             target=state["last_target_word"],
+            target_context=state.get("last_target_context") or "",
             kid_input=kid_input,
         )
         logger.debug(f"evaluate_translation_node: {result}")
@@ -128,10 +136,10 @@ class KETPartnerAgent:
             if entry.word in last_words_set:
                 key = entry.word
             else:
-                canonical = await self.repos.vocab.get_ket_word(entry.word)
-                if canonical and canonical in last_words_set:
-                    entry = entry.model_copy(update={"word": canonical})
-                    key = canonical
+                wr = await self.repos.vocab.get_ket_word_any_context(entry.word)
+                if wr and wr.word in last_words_set:
+                    entry = entry.model_copy(update={"word": wr.word})
+                    key = wr.word
                 else:
                     logger.debug(f"evaluate_translation_node: dropping non-KET word '{entry.word}'")
                     continue
@@ -164,8 +172,10 @@ class KETPartnerAgent:
 
     async def select_target_word_node(self, state: BTPKetState) -> dict:
         profile = await self.repos.profile.get()
-        word = await select_target_word(self.repos, profile, self.config)
-        return {"target_word": word}
+        word_ref = await select_target_word(self.repos, profile, self.config)
+        if word_ref is None:
+            return {"target_word": None, "target_context": None}
+        return {"target_word": word_ref.word, "target_context": word_ref.context}
 
     async def generate_sentence_node(self, state: BTPKetState) -> dict:
         age = self.info.get("age", 8)
@@ -177,10 +187,13 @@ class KETPartnerAgent:
         avoid_sentences = list(self._recent_sentences[-window:])
         profile = await self.repos.profile.get()
 
-        sentence, result, final_target = await self._generate_with_fallback(
-            state["target_word"], avoid_words, avoid_sentences, age, profile
+        target = state["target_word"]
+        target_ctx = state.get("target_context") or ""
+
+        sentence, result, final_target, final_ctx = await self._generate_with_fallback(
+            state["target_word"], target_ctx, avoid_words, avoid_sentences, age, profile
         )
-        target = final_target
+        target, target_ctx = final_target, final_ctx
 
         self._recent_sentences.append(sentence)
         # Multi-word / non-alpha target patch. The validator tokenizes with
@@ -242,8 +255,12 @@ class KETPartnerAgent:
         # they're selected as target in a future turn. Without this flag, all
         # words would pool into 'exposed' and refill_mode / oldest_learning_word
         # would treat passive scaffolding as if it were target practice.
+        # Spec §11.9 + §4.3: target uses real context, scaffolding uses "".
+        # increment_exposed internally applies the §4.4 orphan guard, so
+        # scaffolding words without a (word, '') vocab row silently skip.
         for w in result.words_used:
-            await self.repos.stats.increment_exposed(w, is_target=(w == target))
+            ctx = target_ctx if w == target else ""
+            await self.repos.stats.increment_exposed(w, context=ctx, is_target=(w == target))
         # If the accepted sentence still has non-KET words, look up their
         # context meanings so format_output_node can annotate them for the kid.
         annotations: list[dict[str, str]] = []
@@ -257,11 +274,12 @@ class KETPartnerAgent:
             "_exposure_recorded": True,
             "non_ket_annotations": annotations,
         }
-        # If the fallback switched the target word, propagate the new target
-        # to state so persist_turn_node logs the correct target_words and
-        # downstream nodes see the word that was actually practiced.
-        if target != state["target_word"]:
+        # If the fallback switched the target word, propagate new target AND
+        # its context so persist_turn_node logs the right target_words and
+        # downstream nodes see what was actually practiced.
+        if target != state["target_word"] or target_ctx != (state.get("target_context") or ""):
             update["target_word"] = target
+            update["target_context"] = target_ctx
         return update
 
     async def _validate_and_categorize(self, sentence: str, target: str, age: int) -> dict:
@@ -340,6 +358,7 @@ class KETPartnerAgent:
     async def _generate_with_fallback(
         self,
         initial_target: str,
+        initial_context: str,
         avoid_words: list,
         avoid_sentences: list,
         age: int,
@@ -347,28 +366,24 @@ class KETPartnerAgent:
     ):
         """Generate a sentence with retry + smart fallback.
 
-        Returns (sentence, validation_result, final_target).
-        `final_target` differs from `initial_target` when a word switch occurred.
+        Returns (sentence, validation_result, final_target, final_context).
+        `final_target` / `final_context` differ from the initial values when
+        a word switch occurred.
 
         Retry policy (per user spec):
         - Each attempt is validated; on failure the (sentence, reason) is
           appended to `attempts` and fed back to the next regen's prompt
-          via prior_attempts — the LLM sees ALL prior failures, not just
-          the latest.
+          via prior_attempts — the LLM sees ALL prior failures.
         - After retries exhaust:
-          * If any attempt had non_ket_overflow (>1 non-KET words), pick
-            the one with the FEWEST non-KET words (tie → latest) and accept
-            it — non-KET overflow is a tolerable failure (natural English
-            with some unknown words the kid can still translate via the
-            annotations).
+          * If any attempt had non_ket_overflow, pick the one with FEWEST
+            non-KET words (tie → latest) and accept it.
           * Elif ALL attempts were naturalness fails AND we haven't yet
             switched the target word, call select_target_word again and
-            run a full retry cycle with the new word. Bounded to ONE switch
-            so we can't loop forever.
-          * Otherwise (mixed failures, or word already switched and still
-            failing), accept the final draft.
+            run a full retry cycle with the new word. Bounded to ONE switch.
+          * Otherwise accept the final draft.
         """
         target = initial_target
+        context = initial_context
         word_switched = False
 
         while True:
@@ -386,6 +401,7 @@ class KETPartnerAgent:
                     avoid_sentences=avoid_sentences,
                     prior_attempts=attempts,
                     avoid_non_ket_words=seen_non_ket_words,
+                    target_context=context,
                 )
 
             sentence = await _regen()
@@ -395,7 +411,7 @@ class KETPartnerAgent:
                 check = await self._validate_and_categorize(sentence, target, age)
                 result = check["result"]
                 if check["passed"]:
-                    return sentence, result, target  # SUCCESS
+                    return sentence, result, target, context
                 attempts.append({
                     "sentence": sentence,
                     "reason_kind": check["reason_kind"],
@@ -403,22 +419,15 @@ class KETPartnerAgent:
                     "non_ket_words": check["non_ket_words"],
                     "non_ket_count": check["non_ket_count"],
                 })
-                # Accumulate non-KET words across retries — the LLM frequently
-                # reuses the same non-KET word (e.g. "blocks" for "build")
-                # because the target naturally co-occurs with it. Surfacing
-                # them as off-limits forces different scaffolding.
                 for w in check["non_ket_words"]:
                     if w not in seen_non_ket_words:
                         seen_non_ket_words.append(w)
                 sentence = await _regen()
 
-            # Retries exhausted — validate the final draft and record its
-            # outcome (the for-loop's last iteration did `sentence = _regen()`
-            # but never validated that new sentence).
             check = await self._validate_and_categorize(sentence, target, age)
             result = check["result"]
             if check["passed"]:
-                return sentence, result, target  # SUCCESS (final draft passed)
+                return sentence, result, target, context
             attempts.append({
                 "sentence": sentence,
                 "reason_kind": check["reason_kind"],
@@ -427,17 +436,12 @@ class KETPartnerAgent:
                 "non_ket_count": check["non_ket_count"],
             })
 
-            # Smart fallback.
             overflow_attempts = [a for a in attempts if a["reason_kind"] == "non_ket_overflow"]
             all_naturalness = bool(attempts) and all(
                 a["reason_kind"] == "naturalness" for a in attempts
             )
 
             if overflow_attempts:
-                # Pick the one with fewest non-KET words (least bad). Tie →
-                # latest attempt: min() on reversed() returns the last element
-                # among those tied at the minimum, so the kid sees the most
-                # recent LLM output (which has seen the most prior feedback).
                 best = min(reversed(overflow_attempts), key=lambda a: a["non_ket_count"])
                 sentence = best["sentence"]
                 result = await validate_sentence(sentence, self.repos)
@@ -446,29 +450,24 @@ class KETPartnerAgent:
                     f"{len(attempts)} attempts (non_ket_count={len(result.non_ket_words)}); "
                     f"sentence={sentence!r}"
                 )
-                return sentence, result, target
+                return sentence, result, target, context
             elif all_naturalness and not word_switched:
-                # All naturalness fails — the LLM can't produce a natural
-                # sentence for this target. Switch to a different word and
-                # give it a fresh retry cycle.
                 logger.info(
                     f"all {len(attempts)} attempts failed on naturalness; "
                     f"switching target word from '{target}'"
                 )
-                new_word = await select_target_word(self.repos, profile, self.config)
-                if new_word == target:
+                new_ref = await select_target_word(self.repos, profile, self.config)
+                if new_ref is None or new_ref.word == target:
                     logger.warning(
                         f"could not find a different target word; "
                         f"accepting final draft: {sentence!r}"
                     )
-                    return sentence, result, target
-                target = new_word
+                    return sentence, result, target, context
+                target = new_ref.word
+                context = new_ref.context
                 word_switched = True
-                continue  # restart while loop with new word, fresh attempts
+                continue
             else:
-                # Mixed failures (duplicate/target_split/naturalness mix
-                # without overflow) OR word already switched and still
-                # failing — accept the final draft.
                 reasons = []
                 if check["non_ket_count"] > 1:
                     reasons.append(f"{check['non_ket_count']} non-KET word(s): {check['non_ket_words']}")
@@ -477,14 +476,13 @@ class KETPartnerAgent:
                 if check["is_target_split"]:
                     reasons.append(f"multi-word target '{target}' split apart")
                 if not reasons:
-                    # naturalness was the reason (already in attempts)
                     reasons.append(f"naturalness: {check['reason_detail']}")
                 logger.warning(
                     f"sentence validation failed after {len(attempts)} attempts; "
                     f"accepting current draft — reasons: {('; '.join(reasons)) or 'unknown'}; "
                     f"sentence={sentence!r}"
                 )
-                return sentence, result, target
+                return sentence, result, target, context
 
     async def format_output_node(self, state: BTPKetState) -> dict:
         # Read the sentence from last_english_sentence (set by
@@ -540,7 +538,10 @@ class KETPartnerAgent:
                 "ai",
                 ai_msg.content,
                 words_used=words_for_log,
-                target_words=[state["target_word"]] if state.get("target_word") else [],
+                target_words=[{
+                    "word": state["target_word"],
+                    "context": state.get("target_context") or "",
+                }] if state.get("target_word") else [],
                 turn_id=turn_id,
             )
             # Increment has already happened in generate_sentence_node; do
