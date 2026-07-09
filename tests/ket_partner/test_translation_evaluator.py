@@ -68,3 +68,24 @@ async def test_evaluate_fallback_on_error():
     )
     assert result.wrong_words == []
     assert result.correct_translation == ""
+
+
+@pytest.mark.asyncio
+async def test_evaluate_threads_target_context_into_prompt():
+    """Spec §8.3: target_context shows up in the 'Target word being tested'
+    line so the evaluator knows which sense to grade against."""
+    expected = TranslationEval(correct_translation="聪明的孩子", wrong_words=[])
+    llm = _make_llm(expected)
+    await evaluate_translation(
+        llm,
+        sentence="The smart kid.",
+        words=["the", "smart", "kid"],
+        target="smart",
+        target_context="clever",
+        kid_input="聪明的孩子",
+    )
+    bound = llm.with_structured_output.return_value
+    messages = bound.ainvoke.call_args.args[0]
+    target_msg = [m for m in messages if "Target word being tested" in m.content][0]
+    assert "smart" in target_msg.content
+    assert "clever" in target_msg.content

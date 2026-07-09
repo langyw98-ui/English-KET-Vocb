@@ -35,12 +35,17 @@ class WordMeaning(BaseModel):
     meaning: str
 
 
-async def lookup_word_meaning(llm, sentence: str, word: str) -> WordMeaning:
+async def lookup_word_meaning(
+    llm, sentence: str, word: str, context: str = ""
+) -> WordMeaning:
     structured = llm.with_structured_output(WordMeaning, method="function_calling")
+    word_line = f"单词：{word}"
+    if context:
+        word_line += f"（in the sense of {context}）"
     messages = [
         SystemMessage(content=_SYSTEM),
         HumanMessage(content=f"句子：{sentence}"),
-        HumanMessage(content=f"单词：{word}"),
+        HumanMessage(content=word_line),
     ]
     try:
         result = await structured.ainvoke(messages)

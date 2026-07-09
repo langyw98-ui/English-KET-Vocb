@@ -289,3 +289,43 @@ async def test_generate_sentence_prompt_omits_target_split_block_when_no_split_h
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "SPLIT" not in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_includes_context_when_provided():
+    """Spec §8.1: when target_context is non-empty, the prompt must tell
+    the LLM which sense of the target to use. Without this, 'smart' might
+    come back as 'stylish' when the system intended 'clever'."""
+    llm = _make_llm("The smart kid solved the puzzle.")
+    await generate_sentence(
+        llm,
+        target="smart",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+        target_context="clever",
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "smart" in system_text
+    assert "clever" in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_sentence_prompt_omits_context_block_when_empty():
+    """First-turn / single-sense case: no context block."""
+    llm = _make_llm("The cat runs.")
+    await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    bound = llm.bind.return_value
+    sent_messages = bound.ainvoke.call_args.args[0]
+    system_text = sent_messages[0].content
+    assert "specifically in this sense" not in system_text

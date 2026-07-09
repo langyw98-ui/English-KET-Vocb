@@ -14,7 +14,7 @@ Constraints:
 - Must be NATURAL and make real-world sense. Subject-verb-object must reflect how things actually behave. No nonsense like "ice cream makes my nose move" or "the book sings".
 - Playful or imaginative situations are fine, but only if internally coherent.
 - NO emoji, NO Chinese.
-{history_block}{non_ket_block}{target_split_block}
+{history_block}{non_ket_block}{target_split_block}{context_block}
 Output: just the English sentence, nothing else.
 """
 
@@ -32,6 +32,10 @@ _TARGET_SPLIT_BLOCK = """
 At least one previous attempt SPLIT the target phrase — its words did NOT appear contiguously in the sentence.
 The target "{target}" MUST appear as a single inseparable unit, with its words side-by-side in the same order.
 Rewrite the sentence so the target phrase is intact.
+"""
+
+_CONTEXT_BLOCK = """
+Use "{target}" specifically in this sense: {context}.
 """
 
 # Inline note appended to the target line when the target is a multi-word
@@ -60,6 +64,7 @@ async def generate_sentence(
     avoid_sentences: list = None,
     prior_attempts: list = None,
     avoid_non_ket_words: list = None,
+    target_context: str = "",
 ) -> str:
     creative = llm.bind(temperature=0.8)
     avoid_sentences = avoid_sentences or []
@@ -77,6 +82,10 @@ async def generate_sentence(
         if any(a.get("reason_kind") == "target_split" for a in prior_attempts)
         else ""
     )
+    context_block = (
+        _CONTEXT_BLOCK.format(target=target, context=target_context)
+        if target_context else ""
+    )
     system_text = _SYSTEM.format(
         age=age,
         min_words=min_words,
@@ -88,6 +97,7 @@ async def generate_sentence(
         history_block=history_block,
         non_ket_block=non_ket_block,
         target_split_block=target_split_block,
+        context_block=context_block,
     )
     messages = [
         SystemMessage(content=system_text),

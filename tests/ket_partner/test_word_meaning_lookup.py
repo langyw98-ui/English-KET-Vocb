@@ -70,3 +70,16 @@ async def test_lookup_falls_back_when_both_calls_echo_english():
     assert result.meaning.strip().lower() != "sea", (
         f"meaning must not be the bare English echo; got {result.meaning!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_lookup_threads_context_into_prompt():
+    """Spec §8.4: context lets the LLM pick the right Chinese meaning for
+    multi-sense words (smart = 聪明 vs 时髦)."""
+    llm = _make_llm(WordMeaning(meaning="聪明"))
+    await lookup_word_meaning(llm, "The smart kid.", "smart", context="clever")
+    bound = llm.with_structured_output.return_value
+    messages = bound.ainvoke.call_args.args[0]
+    # context should appear somewhere in the messages list.
+    all_content = " ".join(m.content for m in messages)
+    assert "clever" in all_content

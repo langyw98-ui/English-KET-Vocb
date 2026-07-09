@@ -112,13 +112,17 @@ async def evaluate_translation(
     words: List[str],
     target: str,
     kid_input: str,
+    target_context: str = "",
 ) -> TranslationEval:
     structured = llm.with_structured_output(TranslationEval, method="function_calling")
+    target_line = f"Target word being tested: {target}"
+    if target_context:
+        target_line += f" (sense: {target_context})"
     messages = [
         SystemMessage(content=_SYSTEM),
         HumanMessage(content=f"English sentence: {sentence}"),
         HumanMessage(content=f"Sentence words to check: {words}"),
-        HumanMessage(content=f"Target word being tested: {target}"),
+        HumanMessage(content=target_line),
         HumanMessage(content=f"Kid's Chinese translation: {kid_input}"),
     ]
     try:
