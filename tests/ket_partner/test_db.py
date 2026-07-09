@@ -389,3 +389,98 @@ async def test_oldest_learning_word_ignores_mastered(temp_db_path):
     await repos.stats.increment_exposed("exposed_word")
     result = await repos.stats.oldest_learning_word()
     assert result == "exposed_word"
+
+
+@pytest.mark.asyncio
+async def test_get_ket_word_returns_wordref_with_context(temp_db_path):
+    """Spec §4.1: get_ket_word returns a WordRef carrying both word and
+    context so callers don't have to thread context separately."""
+    from flow.ket_partner.db import WordRef
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "smart,adj,,clever\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    wr = await repos.vocab.get_ket_word("smart", context="clever")
+    assert wr == WordRef(word="smart", context="clever")
+
+
+@pytest.mark.asyncio
+async def test_get_ket_word_returns_none_when_context_mismatch(temp_db_path):
+    """Spec §5.1: precise lookup. smart has only (smart, clever); asking
+    for (smart, '') returns None — this is the property the validator
+    MUST avoid by using get_ket_word_any_context."""
+    csv_text = "word,part_of_speech,topic,context\nsmart,adj,,clever\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    assert await repos.vocab.get_ket_word("smart", context="") is None
+
+
+@pytest.mark.asyncio
+async def test_get_ket_word_any_context_prefers_default(temp_db_path):
+    """Spec §5.1: when (word, '') exists, return it; otherwise return the
+    first by context ASC. Preferring default keeps the any-context lookup
+    stable across schema growth."""
+    from flow.ket_partner.db import WordRef
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "design,v,,\n"            # default sense
+        "design,n,,planning\n"
+        "design,n,,drawing\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    wr = await repos.vocab.get_ket_word_any_context("design")
+    assert wr == WordRef(word="design", context="")
+
+
+@pytest.mark.asyncio
+async def test_get_ket_word_any_context_returns_first_when_no_default(temp_db_path):
+    """Spec §5.1: 7 orphan-skip words have no (word, '') row. The
+    any-context lookup must still recognize them as KET — return the
+    lexicographically first context."""
+    from flow.ket_partner.db import WordRef
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "smart,adj,,stylish\n"
+        "smart,adj,,clever\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    wr = await repos.vocab.get_ket_word_any_context("smart")
+    assert wr == WordRef(word="smart", context="clever")
+
+
+@pytest.mark.asyncio
+async def test_words_in_topic_without_stats_returns_wordref(temp_db_path):
+    """Spec §6: vocab_selector transparently threads WordRef through; the
+    underlying query must return (word, context) tuples.
+
+    Uses a single-candidate CSV because the SQL is ORDER BY RANDOM() LIMIT 1
+    (production indexes [0]) -- deterministic assertion needs exactly one
+    candidate."""
+    from flow.ket_partner.db import WordRef
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "cat,n,Animals,\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    candidates = await repos.vocab.words_in_topic_without_stats("Animals")
+    assert candidates == [WordRef(word="cat", context="")]

@@ -3,11 +3,22 @@ import json
 import sqlite3
 from datetime import datetime
 from os.path import dirname, join
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 import aiosqlite
 
 from flow.common import logger
+
+
+class WordRef(NamedTuple):
+    """A (word, context) pair — the unit of practice.
+
+    Threads through vocab_selector → agent → evaluator so target context
+    reaches every prompt that needs it. Spec §4.1.
+    """
+    word: str
+    context: str = ""
+
 
 # Mastery ceiling. A score of 2 graduates a word to 'mastered'; without a
 # hard cap, repeated correct translations keep accumulating (3, 4, 5, ...)
@@ -111,54 +122,86 @@ class VocabRepo:
     def __init__(self, db: aiosqlite.Connection):
         self._db = db
 
-    async def get_topics_for_word(self, word: str) -> List[str]:
+    async def get_topics_for_word(self, word: str, context: str = "") -> List[str]:
         async with self._db.execute(
-            "SELECT topic FROM ket_word_topics WHERE word = ? ORDER BY topic",
-            (word,),
+            "SELECT topic FROM ket_vocab_topics "
+            "WHERE word = ? AND context = ? ORDER BY topic",
+            (word, context),
         ) as cur:
             rows = await cur.fetchall()
         return [r[0] for r in rows]
 
-    async def get_ket_word(self, word: str) -> Optional[str]:
-        """Case-insensitive lookup. Returns the canonical form stored in the
-        vocab (e.g., 'i' → 'I'), or None if not found. The canonical form
-        must be used by callers when tracking stats so mastery reconciles
-        with target-word selection (which uses canonical form from the CSV).
+    async def get_ket_word(
+        self, word: str, context: str = ""
+    ) -> Optional[WordRef]:
+        """Precise (word, context) lookup, case-insensitive on word.
+
+        Use when the caller already knows the WordRef (target path). For
+        token-based lookups where sense is unknown (validator, canonical
+        form, asks_meaning), use get_ket_word_any_context instead — see
+        Spec §5.1.
         """
         async with self._db.execute(
-            "SELECT word FROM ket_vocabulary WHERE word = ? COLLATE NOCASE LIMIT 1",
+            "SELECT word, context FROM ket_vocabulary "
+            "WHERE word = ? COLLATE NOCASE AND context = ? LIMIT 1",
+            (word, context),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return WordRef(word=row[0], context=row[1])
+
+    async def get_ket_word_any_context(self, word: str) -> Optional[WordRef]:
+        """Lookup by word only; for token-based KET-membership checks.
+
+        Returns (word, '') if it exists (the 'default sense' row), else the
+        lexicographically first context. Stability matters: callers like
+        asks_meaning rely on a deterministic answer for the same input.
+        Spec §5.1.
+        """
+        async with self._db.execute(
+            "SELECT word, context FROM ket_vocabulary "
+            "WHERE word = ? COLLATE NOCASE "
+            "ORDER BY (context = '') DESC, context ASC LIMIT 1",
             (word,),
         ) as cur:
             row = await cur.fetchone()
-            return row[0] if row else None
+        if row is None:
+            return None
+        return WordRef(word=row[0], context=row[1])
 
-    async def words_in_topic_without_stats(self, topic: str) -> List[str]:
+    async def words_in_topic_without_stats(self, topic: str) -> List[WordRef]:
         sql = (
-            "SELECT v.word FROM ket_vocabulary v "
-            "JOIN ket_word_topics t ON v.word = t.word "
-            "LEFT JOIN vocab_stats s ON v.word = s.word "
+            "SELECT v.word, v.context FROM ket_vocabulary v "
+            "JOIN ket_vocab_topics t ON v.word = t.word AND v.context = t.context "
+            "LEFT JOIN vocab_stats s ON v.word = s.word AND v.context = s.context "
             "WHERE t.topic = ? AND s.word IS NULL "
             "ORDER BY RANDOM() LIMIT 1"
         )
         async with self._db.execute(sql, (topic,)) as cur:
             rows = await cur.fetchall()
-        return [r[0] for r in rows]
+        return [WordRef(word=r[0], context=r[1]) for r in rows]
 
-    async def unexposed_notopic_words(self) -> List[str]:
+    async def unexposed_notopic_words(self) -> List[WordRef]:
         sql = (
-            "SELECT v.word FROM ket_vocabulary v "
-            "WHERE NOT EXISTS (SELECT 1 FROM ket_word_topics t WHERE t.word = v.word) "
-            "AND NOT EXISTS (SELECT 1 FROM vocab_stats s WHERE s.word = v.word) "
+            "SELECT v.word, v.context FROM ket_vocabulary v "
+            "WHERE NOT EXISTS ("
+            "    SELECT 1 FROM ket_vocab_topics t "
+            "    WHERE t.word = v.word AND t.context = v.context"
+            ") AND NOT EXISTS ("
+            "    SELECT 1 FROM vocab_stats s "
+            "    WHERE s.word = v.word AND s.context = v.context"
+            ") "
             "ORDER BY RANDOM() LIMIT 1"
         )
         async with self._db.execute(sql) as cur:
             rows = await cur.fetchall()
-        return [r[0] for r in rows]
+        return [WordRef(word=r[0], context=r[1]) for r in rows]
 
     async def topics_with_unmastered(self, exclude: Optional[str] = None) -> List[str]:
         sql = (
-            "SELECT t.topic FROM ket_word_topics t "
-            "LEFT JOIN vocab_stats s ON t.word = s.word "
+            "SELECT t.topic FROM ket_vocab_topics t "
+            "LEFT JOIN vocab_stats s ON t.word = s.word AND t.context = s.context "
             "WHERE (s.status IS NULL OR s.status != 'mastered')"
         )
         params = ()
