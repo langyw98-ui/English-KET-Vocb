@@ -172,6 +172,10 @@ async def test_profile_repo_init_creates_single_row(temp_db_path):
 @pytest.mark.asyncio
 async def test_stats_repo_apply_delta_creates_row(temp_db_path):
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.apply_delta("cat", delta=1, exposed=True)
     stats = await repos.stats.get("cat")
     assert stats["mastery_score"] == 1
@@ -183,6 +187,10 @@ async def test_stats_repo_apply_delta_creates_row(temp_db_path):
 @pytest.mark.asyncio
 async def test_stats_repo_apply_delta_floor_at_zero(temp_db_path):
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.apply_delta("cat", delta=-1, exposed=False)
     stats = await repos.stats.get("cat")
     assert stats["mastery_score"] == 0
@@ -197,6 +205,10 @@ async def test_stats_repo_apply_delta_caps_mastery_at_cap(temp_db_path):
     pool. Capping at 2 keeps the demotion path short: a single wrong answer
     (2→1) demotes immediately."""
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     for _ in range(6):
         await repos.stats.apply_delta("cat", delta=1, exposed=True)
     stats = await repos.stats.get("cat")
@@ -214,6 +226,10 @@ async def test_stats_repo_apply_delta_caps_mastery_at_cap(temp_db_path):
 async def test_stats_repo_apply_delta_caps_single_large_delta(temp_db_path):
     """A single delta > CAP (e.g., backfill or test setup) must clamp at CAP=2."""
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.apply_delta("cat", delta=5, exposed=True)
     stats = await repos.stats.get("cat")
     assert stats["mastery_score"] == 2
@@ -225,6 +241,10 @@ async def test_status_transitions(temp_db_path):
     graduates to 'mastered' at 2, demotes to 'learning' immediately on a
     single wrong answer (no absorption buffer with CAP=2)."""
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     # delta=1 exposed=True, no is_target → 'exposed' (passive + correct)
     await repos.stats.apply_delta("cat", delta=1, exposed=True)
     assert (await repos.stats.get("cat"))["status"] == "exposed"
@@ -242,6 +262,10 @@ async def test_status_transitions(temp_db_path):
 @pytest.mark.asyncio
 async def test_increment_exposed_creates_exposed_row_for_scaffolding(temp_db_path):
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.increment_exposed("cat")
     stats = await repos.stats.get("cat")
     assert stats["exposed_count"] == 1
@@ -252,6 +276,10 @@ async def test_increment_exposed_creates_exposed_row_for_scaffolding(temp_db_pat
 @pytest.mark.asyncio
 async def test_increment_exposed_creates_learning_row_for_target(temp_db_path):
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.increment_exposed("cat", is_target=True)
     stats = await repos.stats.get("cat")
     assert stats["exposed_count"] == 1
@@ -263,6 +291,10 @@ async def test_increment_exposed_promotes_existing_exposed_to_learning(temp_db_p
     """When a word previously seen as scaffolding becomes a target, its
     status must promote from 'exposed' to 'learning'."""
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.increment_exposed("cat")  # scaffolding exposure
     assert (await repos.stats.get("cat"))["status"] == "exposed"
     await repos.stats.increment_exposed("cat", is_target=True)  # now target
@@ -275,6 +307,10 @@ async def test_increment_exposed_preserves_learning_on_scaffolding_reexposure(te
     """A word that was target once, then appears as scaffolding in a later
     sentence, must stay 'learning' (target history is sticky)."""
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.increment_exposed("cat", is_target=True)
     await repos.stats.increment_exposed("cat")  # scaffolding re-exposure
     assert (await repos.stats.get("cat"))["status"] == "learning"
@@ -348,37 +384,61 @@ async def test_oldest_learning_word_returns_none_when_empty(temp_db_path):
 @pytest.mark.asyncio
 async def test_oldest_learning_word_prefers_learning_over_exposed(temp_db_path):
     """When both pools exist, learning wins — exposed is only the fallback."""
+    from flow.ket_partner.db import WordRef
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('old_exposed', '', 'n', 0)"
+    )
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('new_target', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     # 'exposed' word with OLDER last_seen_at — must still lose to any 'learning' word
     await repos.stats.increment_exposed("old_exposed")
     # Manually backdate its last_seen_at to guarantee it's older
     await repos.stats._db.execute(
-        "UPDATE vocab_stats SET last_seen_at = '2020-01-01 00:00:00' WHERE word = 'old_exposed'"
+        "UPDATE vocab_stats SET last_seen_at = '2020-01-01 00:00:00' WHERE word = 'old_exposed' AND context = ''"
     )
     await repos.stats.increment_exposed("new_target", is_target=True)  # 'learning'
     result = await repos.stats.oldest_learning_word()
-    assert result == "new_target"
+    assert result == WordRef(word="new_target", context="")
 
 
 @pytest.mark.asyncio
 async def test_oldest_learning_word_falls_back_to_exposed_when_no_learning(temp_db_path):
     """Pool dry-up case: all learning words graduated, fall back to oldest
     exposed — this is the path that promotes a scaffolding word to target."""
+    from flow.ket_partner.db import WordRef
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('first_exposed', '', 'n', 0)"
+    )
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('second_exposed', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     await repos.stats.increment_exposed("first_exposed")
     await repos.stats.increment_exposed("second_exposed")
     # Backdate 'first_exposed' to ensure it's older
     await repos.stats._db.execute(
-        "UPDATE vocab_stats SET last_seen_at = '2020-01-01 00:00:00' WHERE word = 'first_exposed'"
+        "UPDATE vocab_stats SET last_seen_at = '2020-01-01 00:00:00' WHERE word = 'first_exposed' AND context = ''"
     )
     result = await repos.stats.oldest_learning_word()
-    assert result == "first_exposed"
+    assert result == WordRef(word="first_exposed", context="")
 
 
 @pytest.mark.asyncio
 async def test_oldest_learning_word_ignores_mastered(temp_db_path):
     """Mastered words must never be returned as practice targets."""
+    from flow.ket_partner.db import WordRef
     repos = await init_db(temp_db_path, csv_path=None)
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('mastered_word', '', 'n', 0)"
+    )
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('exposed_word', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
     # Bump mastery to 3 via repeated +1 deltas with is_target=True
     await repos.stats.apply_delta("mastered_word", delta=1, exposed=True, is_target=True)
     await repos.stats.apply_delta("mastered_word", delta=1, is_target=True)
@@ -388,7 +448,7 @@ async def test_oldest_learning_word_ignores_mastered(temp_db_path):
     # mastered_word is filtered out.
     await repos.stats.increment_exposed("exposed_word")
     result = await repos.stats.oldest_learning_word()
-    assert result == "exposed_word"
+    assert result == WordRef(word="exposed_word", context="")
 
 
 @pytest.mark.asyncio
@@ -484,3 +544,79 @@ async def test_words_in_topic_without_stats_returns_wordref(temp_db_path):
     repos = await init_db(temp_db_path, csv_path=csv_path)
     candidates = await repos.vocab.words_in_topic_without_stats("Animals")
     assert candidates == [WordRef(word="cat", context="")]
+
+
+@pytest.mark.asyncio
+async def test_apply_delta_skips_orphan_default_sense(temp_db_path):
+    """Spec §4.4: smart has only (smart, clever) in vocab. Writing stats
+    at (smart, '') must silently no-op — otherwise /exportstats shows a
+    KET row that the vocab table doesn't have."""
+    csv_text = "word,part_of_speech,topic,context\nsmart,adj,,clever\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    # Scaffolding-style call: context="" default.
+    result = await repos.stats.apply_delta("smart", delta=1, exposed=True)
+    assert result is None
+    # Confirm no stats row was created.
+    assert await repos.stats.get("smart") is None
+    assert await repos.stats.get("smart", context="clever") is None
+
+
+@pytest.mark.asyncio
+async def test_apply_delta_writes_default_sense_when_vocab_has_row(temp_db_path):
+    """Spec §15: design/follow/share/train all have a (word, '') row in
+    vocab. For these words, scaffolding exposure DOES write to (word, '')."""
+    csv_text = (
+        "word,part_of_speech,topic,context\n"
+        "design,v,,\n"
+        "design,n,,planning\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    await repos.stats.apply_delta("design", delta=1, exposed=True)
+    default = await repos.stats.get("design")
+    assert default is not None
+    assert default["exposed_count"] == 1
+    # Specific sense row stays untouched.
+    planning = await repos.stats.get("design", context="planning")
+    assert planning is None
+
+
+@pytest.mark.asyncio
+async def test_apply_delta_threads_context_for_target_path(temp_db_path):
+    """Spec §4.3: target path passes the real context through. apply_delta
+    writes to (word, context) without consulting the orphan guard
+    (non-empty context is always valid by source)."""
+    csv_text = "word,part_of_speech,topic,context\nsmart,adj,,clever\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    await repos.stats.apply_delta("smart", context="clever", delta=1, is_target=True)
+    row = await repos.stats.get("smart", context="clever")
+    assert row is not None
+    assert row["mastery_score"] == 1
+    assert row["status"] == "learning"
+
+
+@pytest.mark.asyncio
+async def test_oldest_learning_word_returns_wordref(temp_db_path):
+    """Spec §5.2: oldest_learning_word returns WordRef so vocab_selector
+    can thread the context through to the agent."""
+    from flow.ket_partner.db import WordRef
+    csv_text = "word,part_of_speech,topic,context\ncat,n,Animals,\n"
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    repos = await init_db(temp_db_path, csv_path=csv_path)
+    await repos.stats.increment_exposed("cat", is_target=True)
+    result = await repos.stats.oldest_learning_word()
+    assert result == WordRef(word="cat", context="")

@@ -218,41 +218,68 @@ class StatsRepo:
     def __init__(self, db: aiosqlite.Connection):
         self._db = db
 
-    async def get(self, word: str) -> Optional[dict]:
+    async def _vocab_has_default_sense(self, word: str) -> bool:
+        """Spec §4.4: returns True iff (word, '') exists in ket_vocabulary.
+        Used by apply_delta to silently skip stats writes that would
+        produce orphan rows for multi-sense words like 'smart' that have
+        no default-sense row in vocab."""
         async with self._db.execute(
-            "SELECT word, exposed_count, correct_count, wrong_count, "
-            "mastery_score, status, first_seen_at, last_seen_at "
-            "FROM vocab_stats WHERE word = ?",
+            "SELECT 1 FROM ket_vocabulary WHERE word = ? AND context = '' LIMIT 1",
             (word,),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+    async def get(self, word: str, context: str = "") -> Optional[dict]:
+        async with self._db.execute(
+            "SELECT word, context, exposed_count, correct_count, wrong_count, "
+            "mastery_score, status, first_seen_at, last_seen_at "
+            "FROM vocab_stats WHERE word = ? AND context = ?",
+            (word, context),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
             return None
         return {
             "word": row[0],
-            "exposed_count": row[1],
-            "correct_count": row[2],
-            "wrong_count": row[3],
-            "mastery_score": row[4],
-            "status": row[5],
-            "first_seen_at": row[6],
-            "last_seen_at": row[7],
+            "context": row[1],
+            "exposed_count": row[2],
+            "correct_count": row[3],
+            "wrong_count": row[4],
+            "mastery_score": row[5],
+            "status": row[6],
+            "first_seen_at": row[7],
+            "last_seen_at": row[8],
         }
 
     async def apply_delta(
-        self, word: str, delta: int, exposed: bool = False, is_target: bool = False
-    ) -> dict:
-        existing = await self.get(word)
+        self,
+        word: str,
+        context: str = "",
+        delta: int = 0,
+        exposed: bool = False,
+        is_target: bool = False,
+    ) -> Optional[dict]:
+        # Orphan-skip guard (Spec §4.4). When context="" (scaffolding path),
+        # the word may be one of the 7 multi-sense words with no default row
+        # in vocab. Writing stats here would produce a row the /exportstats
+        # LEFT JOIN can't match — silent no-op instead. Non-empty context
+        # always comes from the target path (vocab_selector picked it from
+        # ket_vocabulary), so existence is guaranteed and the guard skipped.
+        if context == "" and not await self._vocab_has_default_sense(word):
+            return None
+
+        existing = await self.get(word, context)
         now = datetime.utcnow()
         if existing is None:
             score = min(MASTERY_CAP, max(0, delta))
             await self._db.execute(
                 "INSERT INTO vocab_stats "
-                "(word, exposed_count, correct_count, wrong_count, mastery_score, "
-                "status, first_seen_at, last_seen_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(word, context, exposed_count, correct_count, wrong_count, "
+                "mastery_score, status, first_seen_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     word,
+                    context,
                     1 if exposed else 0,
                     1 if delta > 0 else 0,
                     1 if delta < 0 else 0,
@@ -270,7 +297,7 @@ class StatsRepo:
             await self._db.execute(
                 "UPDATE vocab_stats SET exposed_count=?, correct_count=?, "
                 "wrong_count=?, mastery_score=?, status=?, last_seen_at=? "
-                "WHERE word=?",
+                "WHERE word=? AND context=?",
                 (
                     new_exposed,
                     new_correct,
@@ -279,10 +306,11 @@ class StatsRepo:
                     _derive_status(existing["status"], new_score, is_target=is_target),
                     now,
                     word,
+                    context,
                 ),
             )
         await self._db.commit()
-        return await self.get(word)
+        return await self.get(word, context)
 
     async def learning_count(self) -> int:
         async with self._db.execute(
@@ -291,29 +319,33 @@ class StatsRepo:
             row = await cur.fetchone()
         return row[0]
 
-    async def oldest_learning_word(self) -> Optional[str]:
-        # Two-tier: target words ('learning') take priority. Only when the
-        # learning pool is dry do we promote the oldest scaffolding-only word
-        # ('exposed') to target — this is the path that lets a previously-passive
-        # word become an active target when the system has nothing else to practice.
+    async def oldest_learning_word(self) -> Optional[WordRef]:
+        # Two-tier: 'learning' first; fall back to oldest 'exposed' so a
+        # scaffolding-only word can promote to active target when the
+        # learning pool dries up. Spec §5.2.
         async with self._db.execute(
-            "SELECT word FROM vocab_stats WHERE status='learning' "
+            "SELECT word, context FROM vocab_stats WHERE status='learning' "
             "ORDER BY last_seen_at ASC LIMIT 1"
         ) as cur:
             row = await cur.fetchone()
         if row:
-            return row[0]
+            return WordRef(word=row[0], context=row[1])
         async with self._db.execute(
-            "SELECT word FROM vocab_stats WHERE status='exposed' "
+            "SELECT word, context FROM vocab_stats WHERE status='exposed' "
             "ORDER BY last_seen_at ASC LIMIT 1"
         ) as cur:
             row = await cur.fetchone()
-        return row[0] if row else None
+        if row is None:
+            return None
+        return WordRef(word=row[0], context=row[1])
 
-    async def increment_exposed(self, word: str, is_target: bool = False) -> None:
+    async def increment_exposed(
+        self, word: str, context: str = "", is_target: bool = False
+    ) -> None:
         # delta=0 leaves mastery/correct/wrong unchanged; exposed=True
         # increments exposed_count; is_target threads through to status.
-        await self.apply_delta(word, delta=0, exposed=True, is_target=is_target)
+        # Orphan-skip inherited from apply_delta.
+        await self.apply_delta(word, context=context, delta=0, exposed=True, is_target=is_target)
 
 
 class ProfileRepo:
