@@ -1,18 +1,18 @@
 import pytest
 
 from flow.ket_partner.config import load_config
-from flow.ket_partner.db import init_db
+from flow.ket_partner.db import init_db, WordRef
 from flow.ket_partner.vocab_selector import select_target_word, rotate_topic
 
 
 @pytest.fixture
 async def repos(temp_db_path):
     csv_text = (
-        "word,part_of_speech,topic\n"
-        "cat,n,Animals\n"
-        "dog,n,Animals\n"
-        "apple,n,Food\n"
-        "the,det,\n"
+        "word,part_of_speech,topic,context\n"
+        "cat,n,Animals,\n"
+        "dog,n,Animals,\n"
+        "apple,n,Food,\n"
+        "the,det,,\n"
     )
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
@@ -35,7 +35,7 @@ async def test_select_new_word_when_refill_and_interval_met(repos):
         in_refill_mode=1, current_topic="Animals", last_new_word_turn=0, total_turns=5
     )
     word = await select_target_word(repos, profile, cfg)
-    assert word in ("cat", "dog")
+    assert word in (WordRef("cat"), WordRef("dog"))
 
 
 @pytest.mark.asyncio
@@ -55,7 +55,7 @@ async def test_select_practice_word_when_not_refill(repos):
     profile = await repos.profile.get()
     profile["in_refill_mode"] = 0
     word = await select_target_word(repos, profile, cfg)
-    assert word in ("dog", "apple")
+    assert word in (WordRef("dog"), WordRef("apple"))
 
 
 @pytest.mark.asyncio
@@ -74,9 +74,9 @@ async def test_cold_start_picks_distinct_word_on_second_turn(repos):
     profile = await repos.profile.get()
     profile["total_turns"] = 0
     word0 = await select_target_word(repos, profile, cfg)
-    assert word0 in ("cat", "dog")
+    assert word0 in (WordRef("cat"), WordRef("dog"))
     # Simulate persist: target exposure marks it 'learning', turn ticks over.
-    await repos.stats.apply_delta(word0, delta=0, exposed=True, is_target=True)
+    await repos.stats.apply_delta(word0.word, context=word0.context, delta=0, exposed=True, is_target=True)
 
     # Turn 1: pool has 1 word, still below low_watermark. Pre-fix this returned
     # word0 again via oldest_learning_word. Post-fix it must pick a new word.
@@ -84,7 +84,7 @@ async def test_cold_start_picks_distinct_word_on_second_turn(repos):
     profile["total_turns"] = 1
     word1 = await select_target_word(repos, profile, cfg)
     assert word1 is not None
-    assert word1 != word0, f"turn 2 repeated target {word0!r}; pool should fill first"
+    assert word1 != word0
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,7 @@ async def test_pool_at_low_watermark_starts_practicing(repos):
         # oldest_learning_word by last_seen_at ASC — all three share the same
         # timestamp resolution, so any of them is acceptable; what matters is
         # it's a known learning word, not a fresh pick of "the" (mopup).
-        assert word in ("cat", "dog", "apple")
+        assert word in (WordRef("cat"), WordRef("dog"), WordRef("apple"))
     finally:
         cfg.vocab_refill.low_watermark = low
 
@@ -138,4 +138,4 @@ async def test_mopup_when_all_topic_words_used(repos):
         in_refill_mode=1, current_topic="Animals", last_new_word_turn=0, total_turns=5
     )
     word = await select_target_word(repos, profile, cfg)
-    assert word == "the"
+    assert word == WordRef("the")

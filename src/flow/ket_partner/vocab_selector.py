@@ -2,7 +2,7 @@ import random
 from typing import Optional
 
 from flow.ket_partner.config import KetConfig
-from flow.ket_partner.db import Repos
+from flow.ket_partner.db import Repos, WordRef
 
 
 def _compute_refill_mode(learning_count: int, current_flag: int, low: int, high: int) -> int:
@@ -20,7 +20,7 @@ async def rotate_topic(repos: Repos, current: Optional[str]) -> Optional[str]:
 
 async def select_target_word(
     repos: Repos, profile: dict, config: KetConfig
-) -> Optional[str]:
+) -> Optional[WordRef]:
     low = config.vocab_refill.low_watermark
     high = config.vocab_refill.high_watermark
     interval = config.vocab_refill.interval_turns
@@ -50,7 +50,7 @@ async def select_target_word(
     return practice
 
 
-async def _pick_new_word(repos: Repos, profile: dict) -> Optional[str]:
+async def _pick_new_word(repos: Repos, profile: dict) -> Optional[WordRef]:
     topic = profile["current_topic"]
     if topic:
         candidates = await repos.vocab.words_in_topic_without_stats(topic)
