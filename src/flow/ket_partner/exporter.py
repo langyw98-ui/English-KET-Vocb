@@ -5,23 +5,31 @@ from flow.ket_partner.config import KetConfig
 from flow.ket_partner.db import Repos
 
 
+def _fmt_word(word: str, context: str) -> str:
+    """Spec §10: render as 'word(context)' when context is non-empty,
+    otherwise plain 'word'. No separate context column."""
+    return f"{word}({context})" if context else word
+
+
 async def _fetch_all_stats(repos: Repos) -> List[dict]:
     async with repos.stats._db.execute(
-        "SELECT v.word, v.pos, s.exposed_count, s.correct_count, s.wrong_count, "
-        "s.mastery_score, s.status FROM ket_vocabulary v "
-        "LEFT JOIN vocab_stats s ON v.word = s.word "
-        "ORDER BY v.word"
+        "SELECT v.word, v.context, v.pos, s.exposed_count, s.correct_count, "
+        "s.wrong_count, s.mastery_score, s.status "
+        "FROM ket_vocabulary v "
+        "LEFT JOIN vocab_stats s ON v.word = s.word AND v.context = s.context "
+        "ORDER BY v.word, v.context"
     ) as cur:
         rows = await cur.fetchall()
     return [
         {
             "word": r[0],
-            "pos": r[1],
-            "exposed_count": r[2] or 0,
-            "correct_count": r[3] or 0,
-            "wrong_count": r[4] or 0,
-            "mastery_score": r[5] or 0,
-            "status": r[6] or "new",
+            "context": r[1] or "",
+            "pos": r[2],
+            "exposed_count": r[3] or 0,
+            "correct_count": r[4] or 0,
+            "wrong_count": r[5] or 0,
+            "mastery_score": r[6] or 0,
+            "status": r[7] or "new",
         }
         for r in rows
     ]
@@ -51,46 +59,51 @@ def _render_markdown(profile: dict, rows: List[dict], cfg: KetConfig) -> str:
         f"# 学习报告 - {profile.get('nickname') or '小朋友'}",
         f"总轮数: {profile.get('total_turns', 0)}",
         "",
-        f"## 正在学习 ({len(learning)} 词)",
+        f"## 正在学习 ({len(learning)} 项)",
         "| word | pos | exposed | correct | wrong | mastery |",
         "|---|---|---|---|---|---|",
     ]
     for r in learning:
+        w = _fmt_word(r["word"], r["context"])
         lines.append(
-            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"| {w} | {r['pos']} | {r['exposed_count']} | "
             f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
         )
     lines.append("")
-    lines.append(f"## 已掌握 ({len(mastered)} 词)")
+    lines.append(f"## 已掌握 ({len(mastered)} 项)")
     lines.append("| word | pos | exposed | correct | wrong | mastery |")
     lines.append("|---|---|---|---|---|---|")
     for r in mastered:
+        w = _fmt_word(r["word"], r["context"])
         lines.append(
-            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"| {w} | {r['pos']} | {r['exposed_count']} | "
             f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
         )
     lines.append("")
-    lines.append(f"## 已使用 ({len(used)} 词)")
+    lines.append(f"## 已使用 ({len(used)} 项)")
     lines.append("| word | pos | exposed | correct | wrong | mastery |")
     lines.append("|---|---|---|---|---|---|")
     for r in used:
+        w = _fmt_word(r["word"], r["context"])
         lines.append(
-            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"| {w} | {r['pos']} | {r['exposed_count']} | "
             f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
         )
     lines.append("")
-    lines.append(f"## 未使用 ({len(unused)} 词)")
+    lines.append(f"## 未使用 ({len(unused)} 项)")
     lines.append("| word | pos |")
     lines.append("|---|---|")
     for r in unused:
-        lines.append(f"| {r['word']} | {r['pos']} |")
+        w = _fmt_word(r["word"], r["context"])
+        lines.append(f"| {w} | {r['pos']} |")
     lines.append("")
-    lines.append(f"## 学习困难 ({len(struggling)} 词)")
+    lines.append(f"## 学习困难 ({len(struggling)} 项)")
     lines.append("| word | pos | exposed | correct | wrong | mastery |")
     lines.append("|---|---|---|---|---|---|")
     for r in struggling:
+        w = _fmt_word(r["word"], r["context"])
         lines.append(
-            f"| {r['word']} | {r['pos']} | {r['exposed_count']} | "
+            f"| {w} | {r['pos']} | {r['exposed_count']} | "
             f"{r['correct_count']} | {r['wrong_count']} | {r['mastery_score']} |"
         )
     return "\n".join(lines)
