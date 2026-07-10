@@ -259,3 +259,80 @@ async def test_validator_recognizes_placeholder_target_as_ket_unit(repos):
     assert "give somebody a call" in r.words_used
     assert "give" not in r.words_used, "constituent 'give' must not double-count"
     assert "call" not in r.words_used, "constituent 'call' must not double-count"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_hyphenated_target_as_single_token(repos):
+    """Regression: 'guest-house' was tokenized as 'guest' + 'house' by
+    _tokenize's [A-Za-z']+ regex. Both halves aren't in KET individually,
+    so every sentence containing the target was rejected with
+    non_ket=['guest', 'house'], forcing infinite regen.
+
+    Fix: _tokenize includes '-' in the character class, so 'guest-house'
+    is one token whose KET lookup hits directly."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('guest-house', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence(
+        "The guest-house is big.",
+        repos,
+        target="guest-house",
+    )
+    assert r.ok is True, f"hyphenated target should be KET; got non_ket={r.non_ket_words}"
+    assert "guest-house" in r.words_used
+    assert "guest" not in r.words_used
+    assert "house" not in r.words_used
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_capitalized_hyphenated_word_in_middle(repos):
+    """Regression: 'T-shirt' (and other capitalized hyphenated KET words)
+    was doubly broken — _tokenize split it, AND _is_proper_noun('T-shirt')
+    returned True so the i>0 case skip happened before KET lookup.
+
+    Fix: _tokenize keeps hyphenated words whole; the loop also queries KET
+    BEFORE applying the proper-noun skip, so any KET entry recognized via
+    COLLATE NOCASE hits first."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('T-shirt', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The T-shirt is big.", repos)
+    assert r.ok is True, f"T-shirt in middle position should be KET; got non_ket={r.non_ket_words}"
+    assert "T-shirt" in r.words_used, "T-shirt must be recorded in canonical form"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_acronym_in_middle_position(repos):
+    """Regression: capital-letter acronyms (DVD/CD/TV/PC) at i>0 positions
+    were skip-ahead by _is_proper_noun, so they never entered words_used
+    and their mastery never updated.
+
+    Fix: KET lookup is tried first; only tokens that fail KET AND start
+    uppercase AND are at i>0 are treated as proper nouns."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('DVD', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The DVD is big.", repos)
+    assert r.ok is True, f"DVD in middle position should be KET; got non_ket={r.non_ket_words}"
+    assert "DVD" in r.words_used, "DVD must be recorded in canonical form"
+
+
+@pytest.mark.asyncio
+async def test_validator_still_skips_unknown_proper_nouns_in_middle(repos):
+    """Regression guard: unknown proper nouns (e.g. 'John' not in KET) at
+    i>0 positions must still be tolerated — otherwise LLM-generated
+    sentences like 'The cat and John are happy.' would be rejected.
+
+    The proper-noun skip is preserved but moved to AFTER the KET lookup
+    fails, so KET entries are still recognized while unknown names are
+    still tolerated."""
+    r = await validate_sentence("The cat makes John happy.", repos)
+    assert r.ok is True, f"unknown proper noun 'John' should be tolerated; got non_ket={r.non_ket_words}"
+    assert "John" not in r.words_used, "John is not KET — must not appear in words_used"
+    assert "John" not in r.non_ket_words, "John at i>0 must be skipped, not flagged"

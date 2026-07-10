@@ -24,7 +24,7 @@ class ValidationResult(BaseModel):
 
 
 def _tokenize(sentence: str) -> list:
-    return re.findall(r"[A-Za-z']+", sentence)
+    return re.findall(r"[A-Za-z'-]+", sentence)
 
 
 def _is_proper_noun(token: str) -> bool:
@@ -107,8 +107,6 @@ async def validate_sentence(
     words_used = []
     non_ket = []
     for i, tok in enumerate(tokens):
-        if _is_proper_noun(tok) and i != 0:
-            continue
         if tok.lower() in target_constituents:
             continue
         candidates = _candidate_roots(tok)
@@ -128,6 +126,14 @@ async def validate_sentence(
                 break
         if ket_root is not None:
             words_used.append(ket_root)
+        elif _is_proper_noun(tok) and i != 0:
+            # KET lookup failed. If the token starts uppercase and is mid-
+            # sentence, treat it as an unknown proper noun (LLM-generated
+            # person/place name) and tolerate it. Querying KET first ensures
+            # canonical-form KET entries written uppercase (DVD, T-shirt, I,
+            # Monday, China) are recognized even at i>0 — previously the
+            # _is_proper_noun guard ran first and skip-removed them.
+            continue
         else:
             non_ket.append(tok)
     if target_present and target not in words_used:
