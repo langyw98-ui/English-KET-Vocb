@@ -48,7 +48,7 @@ def _candidate_roots(token: str) -> list:
     # like "makes" ends in "es" but its lemma is "make" (verb+s), not "mak".
     # The -es branch handles true -es plurals (watches→watch, boxes→box);
     # the -s branch catches the verb+s case (makes→make, likes→like).
-    # get_ket_word tries candidates in order, so an incorrect "mak" candidate
+    # get_ket_word_any_context tries candidates in order, so an incorrect "mak" candidate
     # is harmless as long as "make" is also in the list.
     if lower.endswith("ies") and len(lower) > 4:
         candidates.append(lower[:-3] + "y")   # stories → story
