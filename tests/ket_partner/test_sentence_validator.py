@@ -27,6 +27,8 @@ async def repos(temp_db_path):
         "hat,n,Clothing,\n"
         "cake,n,Food,\n"
         "wear,v,Clothing,\n"
+        "say,v,Action,\n"
+        "and,conj,,\n"
         "watch,v,Action,\n"
         "walk,v,Action,\n"
         "run,v,Action,\n"
@@ -336,3 +338,92 @@ async def test_validator_still_skips_unknown_proper_nouns_in_middle(repos):
     assert r.ok is True, f"unknown proper noun 'John' should be tolerated; got non_ket={r.non_ket_words}"
     assert "John" not in r.words_used, "John is not KET — must not appear in words_used"
     assert "John" not in r.non_ket_words, "John at i>0 must be skipped, not flagged"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_exclamation_entry_stripped_of_punctuation(repos):
+    """Regression: 'congratulations!' is stored in KET with the '!' attached
+    (exclamation entries). _tokenize correctly strips '!' from sentence
+    tokens, but KET lookup failed because 'congratulations' (no !) doesn't
+    match the stored 'congratulations!' — COLLATE NOCASE only folds case,
+    not punctuation.
+
+    Fix: _candidate_roots appends '!','?','.' as suffix candidates so the
+    dict form is tried when the bare token doesn't match."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('congratulations!', '', 'exclam', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The cat says congratulations.", repos)
+    assert r.ok is True, f"exclamation entry should match stripped form; got non_ket={r.non_ket_words}"
+    assert "congratulations!" in r.words_used, "canonical form 'congratulations!' must be recorded"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_capitalized_exclamation_in_middle(repos):
+    """Regression: 'Yeah!' (capitalized exclamation) was doubly broken —
+    the '!' was stripped, AND _is_proper_noun('Yeah') returned True so
+    i>0 skip happened before KET lookup. Both layers need to cooperate:
+    KET lookup (with suffix candidates) runs first; only if it fails
+    does the proper-noun skip kick in."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('Yeah!', '', 'exclam', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The cat says Yeah! and runs.", repos)
+    assert r.ok is True, f"'Yeah!' should be KET; got non_ket={r.non_ket_words}"
+    assert "Yeah!" in r.words_used, "canonical form 'Yeah!' must be recorded"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_abbreviation_with_periods(repos):
+    """Regression: 'p.m.' and 'a.m.' are stored in KET with internal '.'.
+    _tokenize used [A-Za-z']+ which split on '.', giving tokens 'p' and
+    'm' (or 'a' and 'm') — neither half is in KET.
+
+    Fix: _tokenize's character class now includes '.' and '-', so 'p.m.'
+    stays as a single token whose first KET-lookup candidate hits."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('p.m.', '', 'adv', 0), ('a.m.', '', 'adv', 0)"
+    )
+    await repos.vocab._db.commit()
+    r1 = await validate_sentence("The p.m. is big.", repos, target="p.m.")
+    assert r1.ok is True, f"p.m. should be KET; got non_ket={r1.non_ket_words}"
+    assert "p.m." in r1.words_used
+
+    r2 = await validate_sentence("The a.m. is big.", repos, target="a.m.")
+    assert r2.ok is True, f"a.m. should be KET; got non_ket={r2.non_ket_words}"
+    assert "a.m." in r2.words_used
+
+
+@pytest.mark.asyncio
+async def test_validator_strips_terminal_punctuation_from_target_constituents(repos):
+    """Regression: target='Guess what?' has target_constituents {'guess',
+    'what?'} (with the '?' preserved by target.split()). Sentence token
+    'what' (no '?') didn't match — so it was NOT skipped as a constituent,
+    got looked up as standalone KET, and double-counted in words_used
+    (both as 'what' and as 'Guess what?').
+
+    Fix: target_constituents strips terminal punctuation via rstrip('.?!')."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('Guess what?', '', 'v', 0), ('what', '', 'pron', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("Guess what? The cat is big.", repos, target="Guess what?")
+    assert r.ok is True
+    assert "Guess what?" in r.words_used, "phrase must be recorded"
+    assert "what" not in r.words_used, "constituent 'what' must not double-count"
+
+
+@pytest.mark.asyncio
+async def test_validator_handles_trailing_period_in_sentence_final_word(repos):
+    """Regression guard: with '.' added to the tokenizer char class,
+    sentence-final words like 'big.' tokenize WITH the trailing dot.
+    _candidate_roots must strip it so 'big.' → 'big' lookup succeeds."""
+    r = await validate_sentence("The cat is big.", repos)
+    assert r.ok is True, f"trailing period must not break lookup; got non_ket={r.non_ket_words}"
+    assert "big" in r.words_used

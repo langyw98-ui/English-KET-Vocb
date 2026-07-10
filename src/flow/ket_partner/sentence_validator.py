@@ -24,7 +24,7 @@ class ValidationResult(BaseModel):
 
 
 def _tokenize(sentence: str) -> list:
-    return re.findall(r"[A-Za-z'-]+", sentence)
+    return re.findall(r"[A-Za-z'.-]+", sentence)
 
 
 def _is_proper_noun(token: str) -> bool:
@@ -42,9 +42,23 @@ def _candidate_roots(token: str) -> list:
     `get_ket_word_any_context` for each candidate in order — first match
     wins, which prevents over-stemming (e.g., "bins" → tries "bin" only if
     "bin" is actually a known word).
+
+    `lower` is the punctuation-stripped form so inflection rules like
+    `endswith("s")` work on sentence-final tokens (e.g. "runs." → "runs").
+    The raw form is still added as a candidate for dictionary entries that
+    store punctuation verbatim ("p.m.", "Yeah!").
     """
-    lower = token.lower()
-    candidates = [lower]
+    raw = token.lower()
+    lower = raw.rstrip(".?!")
+    candidates = [raw]
+    if lower != raw:
+        candidates.append(lower)
+    # KET dictionary stores some entries with terminal punctuation attached
+    # — exclamations ("congratulations!", "Yeah!"), abbreviations ("a.m.",
+    # "p.m."). Sentence tokens may carry the punctuation (raw) or not
+    # (lower); try both plus the suffix-attached forms.
+    for suffix in ("!", "?", "."):
+        candidates.append(lower + suffix)
     if lower in _LEMMAS:
         candidates.append(_LEMMAS[lower])
     # Plurals / 3rd-person singular. Try BOTH "-s" and "-es" stems, -s FIRST:
@@ -101,13 +115,14 @@ async def validate_sentence(
     target_present = False
     if target and " " in target.strip() and target_in_sentence(target, sentence):
         target_present = True
-        target_constituents = {c.lower() for c in target.split()}
+        target_constituents = {c.lower().rstrip(".?!") for c in target.split()}
 
     tokens = _tokenize(sentence)
     words_used = []
     non_ket = []
     for i, tok in enumerate(tokens):
-        if tok.lower() in target_constituents:
+        tok_clean = tok.lower().rstrip(".?!")
+        if tok_clean in target_constituents:
             continue
         candidates = _candidate_roots(tok)
         # Skip if any candidate lemma is a function word (e.g. "doing" → "do").
@@ -135,7 +150,7 @@ async def validate_sentence(
             # _is_proper_noun guard ran first and skip-removed them.
             continue
         else:
-            non_ket.append(tok)
+            non_ket.append(tok_clean)
     if target_present and target not in words_used:
         words_used.append(target)
     return ValidationResult(
