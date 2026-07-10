@@ -15,6 +15,7 @@ from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 from flow.ket_partner.profile_summarizer import run_profile_summary
 from flow.ket_partner.sentence_generator import generate_sentence
 from flow.ket_partner.sentence_naturalness import check_naturalness
+from flow.ket_partner.multi_word_target import target_in_sentence
 from flow.ket_partner.sentence_validator import validate_sentence
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
@@ -209,7 +210,7 @@ class KETPartnerAgent:
         if (
             target
             and target not in result.words_used
-            and target.lower() in sentence.lower()
+            and target_in_sentence(target, sentence)
         ):
             result.words_used.append(target)
             # The validator also tracked the target's trailing constituent as
@@ -302,7 +303,7 @@ class KETPartnerAgent:
         is_target_split = (
             bool(target)
             and " " in target.strip()
-            and target.lower() not in sentence.lower()
+            and not target_in_sentence(target, sentence)
         )
 
         passed = False

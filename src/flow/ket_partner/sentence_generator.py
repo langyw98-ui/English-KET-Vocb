@@ -1,6 +1,7 @@
 from langchain.messages import HumanMessage, SystemMessage
 
 from flow.common import logger
+from flow.ket_partner.multi_word_target import find_placeholder, has_placeholder
 
 _SYSTEM = """You write ONE English sentence for a {age}-year-old Chinese kid to translate.
 
@@ -44,6 +45,20 @@ Use "{target}" specifically in this sense: {context}.
 # the target phrase never appears contiguously, so stats tracking misses it.
 _MULTI_WORD_NOTE = " The target is a MULTI-WORD phrase — its words MUST appear contiguously in the sentence, side-by-side in the same order. Do NOT split them with other words."
 
+# Inline note for placeholder phrases like "give somebody a call" — the
+# placeholder token (somebody/someone/something/...) must be REPLACED by a
+# concrete noun/pronoun, not kept literally. The multi-word note would
+# wrongly instruct the LLM to keep "somebody" verbatim.
+_PLACEHOLDER_MULTI_WORD_NOTE = ' The target is a multi-word phrase with a PLACEHOLDER — "{placeholder}" MUST be REPLACED by a concrete noun, name, or pronoun (e.g. him / my mom / the teacher). The OTHER words must appear contiguously and in the same order, with the replacement occupying exactly the placeholder\'s slot. Do NOT keep "{placeholder}" in the sentence.'
+
+
+def _select_multi_word_note(target: str) -> str:
+    if not target or " " not in target.strip():
+        return ""
+    if has_placeholder(target):
+        return _PLACEHOLDER_MULTI_WORD_NOTE.format(placeholder=find_placeholder(target))
+    return _MULTI_WORD_NOTE
+
 
 def _format_history(attempts: list) -> str:
     if not attempts:
@@ -72,7 +87,7 @@ async def generate_sentence(
     avoid_non_ket_words = avoid_non_ket_words or []
     history_block = _HISTORY_BLOCK.format(history=_format_history(prior_attempts)) if prior_attempts else ""
     non_ket_block = _NON_KET_BLOCK.format(words=", ".join(avoid_non_ket_words)) if avoid_non_ket_words else ""
-    multi_word_note = _MULTI_WORD_NOTE if target and " " in target.strip() else ""
+    multi_word_note = _select_multi_word_note(target)
     # target_split_block fires if ANY prior attempt split the target — the LLM
     # tends to repeat the split pattern across retries when the target is a
     # multi-word phrase, so a single earlier split is enough to warrant the

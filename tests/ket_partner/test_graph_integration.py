@@ -1067,6 +1067,69 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
 
 
 @pytest.mark.asyncio
+async def test_generate_node_accepts_placeholder_target_with_substitution(setup, monkeypatch):
+    """Regression: when target='give somebody a call' (placeholder phrase)
+    and the LLM correctly substitutes the placeholder ('I give him a call'),
+    the validator must NOT classify the sentence as target_split. The old
+    literal-substring check 'give somebody a call' failed because no literal
+    'somebody' appears in the sentence — every draft triggered target_split
+    regen, burning the retry budget for nothing.
+
+    Fix: agent.py uses target_in_sentence which compiles a pattern that
+    treats the placeholder as a 1-3 word substitution slot.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+
+    captured: list = []
+
+    async def fake_generate(*a, **kw):
+        s = "He gives him a call every Friday."
+        captured.append({
+            "sentence": s,
+            "prior_attempts": list(kw.get("prior_attempts") or []),
+        })
+        return s
+
+    async def fake_validate(sentence, repos, **kwargs):
+        return ValidationResult(
+            ok=True,
+            words_used=["he", "give somebody a call"],
+            non_ket_words=[],
+        )
+
+    async def fake_naturalness(llm, sentence, age=8):
+        return NaturalnessResult(ok=True, reason="")
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+
+    async def fake_select(repos, profile, cfg):
+        return WordRef(word="give somebody a call", context="")
+    monkeypatch.setattr(agent_module, "select_target_word", fake_select)
+
+    llm = _mock_llm(intent_resp=None, sentence_text="ignored")
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph.agent.config.validate_retry_limit = 3
+
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "placeholder-target"}},
+    )
+
+    # generate_sentence must be called exactly once — no target_split retry.
+    assert len(captured) == 1, (
+        f"placeholder target with substitution must NOT trigger regen; "
+        f"got {len(captured)} generate calls"
+    )
+    assert captured[0]["prior_attempts"] == [], (
+        f"first call must have empty prior_attempts, got {captured[0]['prior_attempts']!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypatch):
     """The `recent_scaffolding` argument passed to generate_sentence must
     reflect the last N SENTENCES' worth of words (flattened), not just the

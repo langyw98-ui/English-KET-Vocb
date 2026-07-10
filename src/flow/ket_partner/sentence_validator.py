@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from flow.ket_partner.multi_word_target import target_in_sentence
+
 _FUNCTION_WORDS_PATH = join(dirname(__file__), "data", "function_words.json")
 _LEMMAS_PATH = join(dirname(__file__), "data", "lemmas.json")
 
@@ -97,7 +99,7 @@ async def validate_sentence(
     # itself is appended once at the end.
     target_constituents: set = set()
     target_present = False
-    if target and " " in target.strip() and target.lower() in sentence.lower():
+    if target and " " in target.strip() and target_in_sentence(target, sentence):
         target_present = True
         target_constituents = {c.lower() for c in target.split()}
 

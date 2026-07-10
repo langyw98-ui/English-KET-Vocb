@@ -228,3 +228,34 @@ async def test_validator_recognizes_multi_word_target_as_ket_unit(repos):
     assert r.ok is True, f"alarm clock should be KET as a unit; got non_ket={r.non_ket_words}"
     assert "alarm clock" in r.words_used
     assert "alarm" not in r.words_used, "constituent must not double-count as scaffolding"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_placeholder_target_as_ket_unit(repos):
+    """Regression: target='give somebody a call' contains a placeholder
+    ('somebody') that the LLM replaces with a concrete noun/pronoun
+    ('my mom'). The validator must recognize the substituted sentence as
+    containing the target phrase, NOT flag 'give'/'a'/'call' as separate
+    scaffolding words, and append the canonical phrase to words_used so
+    mastery tracking reconciles with target-word selection.
+
+    Without the placeholder-aware pattern in target_in_sentence, the
+    literal substring check 'give somebody a call' fails (no literal
+    'somebody' in the sentence), so target_present stays False, the
+    constituents are not skipped, and 'give somebody a call' is never
+    added to words_used — the target's mastery never updates.
+    """
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('give somebody a call', '', 'v', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence(
+        "I give the dog a call.",
+        repos,
+        target="give somebody a call",
+    )
+    assert r.ok is True, f"placeholder target should be KET as a unit; got non_ket={r.non_ket_words}"
+    assert "give somebody a call" in r.words_used
+    assert "give" not in r.words_used, "constituent 'give' must not double-count"
+    assert "call" not in r.words_used, "constituent 'call' must not double-count"
