@@ -179,3 +179,52 @@ async def test_validator_recognizes_word_with_only_specific_contexts_as_ket(repo
     r = await validate_sentence("The smart dog runs.", repos)
     assert r.ok is True, f"smart must be KET; got non_ket={r.non_ket_words}"
     assert "smart" in r.words_used
+
+
+@pytest.mark.asyncio
+async def test_validate_verb_uses_lemmatizes_to_use_not_us(repos):
+    """Regression: "uses" was being lemmatized to "us" (pronoun) instead of
+    "use" (verb). The -es suffix branch produced "us" first; since "us" is
+    KET, the -s branch's "use" never got tried. Fix: try -s before -es so
+    the verb-stem wins for uses/makes/likes, while true -es plurals
+    (watches/boxes) still fall through to the -es branch via miss-then-hit.
+    """
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('use', '', 'v', 0), ('us', '', 'pron', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The cat uses the bed.", repos)
+    assert r.ok is True, f"uses should reduce to use; got non_ket={r.non_ket_words}"
+    assert "use" in r.words_used, f"uses should reduce to 'use' (verb), got {r.words_used}"
+    assert "us" not in r.words_used, "pronoun 'us' must not steal the verb's stats"
+
+
+@pytest.mark.asyncio
+async def test_validator_recognizes_multi_word_target_as_ket_unit(repos):
+    """Regression: when target='alarm clock' (multi-word) and the sentence
+    contains it, the validator must treat the phrase as one KET entry —
+    NOT tokenize 'alarm' separately and flag it as non-KET.
+
+    Previously the validator tokenized per-word; 'alarm' wasn't in KET
+    individually so the sentence was rejected, the LLM regenerated
+    needlessly, and the multi-word patch in generate_sentence_node only
+    ran AFTER validation had already failed.
+
+    Fix: validate_sentence now accepts an optional target kwarg. When
+    target is multi-word and present in the sentence, its constituents
+    are skipped during per-token validation and the target is added as
+    a single entry to words_used."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('alarm clock', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence(
+        "The alarm clock is on the bed.",
+        repos,
+        target="alarm clock",
+    )
+    assert r.ok is True, f"alarm clock should be KET as a unit; got non_ket={r.non_ket_words}"
+    assert "alarm clock" in r.words_used
+    assert "alarm" not in r.words_used, "constituent must not double-count as scaffolding"

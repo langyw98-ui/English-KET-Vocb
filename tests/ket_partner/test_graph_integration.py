@@ -785,7 +785,7 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
     async def fake_generate(*a, **kw):
         return next(sentence_seq)
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         if "alpha" in sentence:
             return ValidationResult(ok=False, words_used=[], non_ket_words=["alpha", "beta"])
         return ValidationResult(ok=False, words_used=[], non_ket_words=["gamma", "delta"])
@@ -825,7 +825,7 @@ async def test_generate_node_regens_when_more_than_one_non_ket(setup, monkeypatc
         call_log["generate"] += 1
         return "alpha bravo charlie delta echo"
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         return ValidationResult(
             ok=False, words_used=[], non_ket_words=["alpha", "bravo", "charlie", "delta"],
         )
@@ -864,7 +864,7 @@ async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch
         call_log["generate"] += 1
         return next(generate_seq)
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # Always passes KET validation — duplicate is the ONLY reason to retry.
         return ValidationResult(ok=True, words_used=["the", "cat", "likes"], non_ket_words=[])
 
@@ -909,7 +909,7 @@ async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
         # Always returns the same body — validate_sentence is what flags it.
         return "Let us build a tall tower with blocks."
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # Always reports the same two non-KET words so the retry loop keeps
         # regenerating with an ever-growing avoid list.
         return ValidationResult(
@@ -960,7 +960,7 @@ async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypat
         captured_attempts.append(list(kw.get("prior_attempts") or []))
         return next(generate_seq)
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # Always passes KET validation — duplicate is the ONLY reason to retry.
         return ValidationResult(ok=True, words_used=["the", "cat", "likes"], non_ket_words=[])
 
@@ -1021,7 +1021,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
         })
         return captured[-1]["sentence"]
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # All words KET, no duplicates — target_split is the ONLY trigger.
         return ValidationResult(ok=True, words_used=["he", "puts", "a"], non_ket_words=[])
 
@@ -1081,7 +1081,7 @@ async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypa
         captured_args["avoid_sentences"] = kw.get("avoid_sentences")
         return "fresh sentence words here"
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         return ValidationResult(ok=True, words_used=["fresh", "sentence", "words"], non_ket_words=[])
 
     monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
@@ -1121,7 +1121,7 @@ async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
     async def fake_generate(*a, **kw):
         return "The cat splashes in the water."
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # 1 non-KET word (splashes); rest are KET.
         return ValidationResult(
             ok=False,
@@ -1172,7 +1172,7 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
     async def fake_generate(*a, **kw):
         return "alpha bravo the cat"
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # Always >1 non-KET — forces the retry loop to exhaust.
         return ValidationResult(
             ok=False, words_used=["the", "cat"], non_ket_words=["alpha", "bravo"],
@@ -1210,7 +1210,7 @@ async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
     async def fake_generate(*a, **kw):
         return "The cat sleeps."
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         return ValidationResult(ok=True, words_used=["the", "cat", "sleeps"], non_ket_words=[])
 
     async def fake_naturalness(llm, sentence, age=8):
@@ -1312,7 +1312,7 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
         captured_attempts.append(list(kw.get("prior_attempts") or []))
         return next(generate_seq)
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         return ValidationResult(ok=True, words_used=["the", "cold", "ice", "cream", "makes", "my", "nose", "move"], non_ket_words=[])
 
     # First call rejects (nonsense), second accepts (natural).
@@ -1375,7 +1375,7 @@ async def test_naturalness_check_skipped_when_ket_validation_fails(setup, monkey
     async def fake_generate(*a, **kw):
         return "alpha bravo charlie"  # all non-KET
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # Always fails KET — never passes the cheap gate.
         return ValidationResult(ok=False, words_used=[], non_ket_words=["alpha", "bravo", "charlie"])
 
@@ -1608,7 +1608,7 @@ async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
     async def fake_generate(*a, **kw):
         return next(sentence_seq)
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # Discriminate by structural marker words (all fake — the real
         # validator would compute these from the vocab, but we control the
         # counts to drive the fallback's tiebreaker).
@@ -1681,7 +1681,7 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
             return next(cat_seq)
         return dog_sentence
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         # All sentences pass KET validation — naturalness is the ONLY gate.
         if "cat" in sentence:
             return ValidationResult(ok=True, words_used=["the", "cat"], non_ket_words=[])
@@ -1768,7 +1768,7 @@ async def test_word_switch_only_once(setup, monkeypatch):
             return next(cat_seq)
         return next(dog_seq)
 
-    async def fake_validate(sentence, repos):
+    async def fake_validate(sentence, repos, **kwargs):
         if "cat" in sentence:
             return ValidationResult(ok=True, words_used=["the", "cat"], non_ket_words=[])
         return ValidationResult(ok=True, words_used=["the", "dog"], non_ket_words=[])

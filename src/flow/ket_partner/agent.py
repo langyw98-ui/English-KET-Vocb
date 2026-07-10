@@ -296,7 +296,7 @@ class KETPartnerAgent:
         - non_ket_words / non_ket_count: from the ValidationResult
         - is_duplicate / is_target_split: the structural gate flags
         """
-        result = await validate_sentence(sentence, self.repos)
+        result = await validate_sentence(sentence, self.repos, target=target)
         is_duplicate = sentence in self._recent_sentences
         non_ket_count = len(result.non_ket_words)
         is_target_split = (
@@ -444,7 +444,7 @@ class KETPartnerAgent:
             if overflow_attempts:
                 best = min(reversed(overflow_attempts), key=lambda a: a["non_ket_count"])
                 sentence = best["sentence"]
-                result = await validate_sentence(sentence, self.repos)
+                result = await validate_sentence(sentence, self.repos, target=target)
                 logger.warning(
                     f"sentence validation: accepting non-KET overflow draft after "
                     f"{len(attempts)} attempts (non_ket_count={len(result.non_ket_words)}); "

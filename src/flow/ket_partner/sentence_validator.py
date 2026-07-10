@@ -1,6 +1,7 @@
 import json
 import re
 from os.path import dirname, join
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -44,18 +45,19 @@ def _candidate_roots(token: str) -> list:
     candidates = [lower]
     if lower in _LEMMAS:
         candidates.append(_LEMMAS[lower])
-    # Plurals / 3rd-person singular. Try BOTH "-es" and "-s" stems: a word
-    # like "makes" ends in "es" but its lemma is "make" (verb+s), not "mak".
-    # The -es branch handles true -es plurals (watches→watch, boxes→box);
-    # the -s branch catches the verb+s case (makes→make, likes→like).
-    # get_ket_word_any_context tries candidates in order, so an incorrect "mak" candidate
-    # is harmless as long as "make" is also in the list.
+    # Plurals / 3rd-person singular. Try BOTH "-s" and "-es" stems, -s FIRST:
+    # a word like "uses" ends in both "s" and "es" — the -s branch yields
+    # "use" (correct verb stem) and the -es branch yields "us" (wrong — the
+    # pronoun). If -es came first, "us" would match KET and steal the verb's
+    # stats. For true -es plurals (watches/boxes), the -s branch produces
+    # "watche"/"boxe" which aren't KET, so the lookup falls through to the
+    # -es branch's "watch"/"box". First-KET-match wins either way.
     if lower.endswith("ies") and len(lower) > 4:
         candidates.append(lower[:-3] + "y")   # stories → story
+    if lower.endswith("s") and len(lower) > 2:
+        candidates.append(lower[:-1])         # cats → cat, makes → make, uses → use
     if lower.endswith("es") and len(lower) > 3:
         candidates.append(lower[:-2])         # watches → watch, boxes → box
-    if lower.endswith("s") and len(lower) > 2:
-        candidates.append(lower[:-1])         # cats → cat, makes → make
     # Past tense (-ed)
     if lower.endswith("ied") and len(lower) > 4:
         candidates.append(lower[:-3] + "y")   # tried → try
@@ -83,12 +85,29 @@ def _candidate_roots(token: str) -> list:
     return candidates
 
 
-async def validate_sentence(sentence: str, repos) -> ValidationResult:
+async def validate_sentence(
+    sentence: str, repos, target: Optional[str] = None
+) -> ValidationResult:
+    # Multi-word target awareness: if the caller passed a multi-word target
+    # (e.g. "alarm clock") and it appears contiguously in the sentence, treat
+    # the phrase as one KET entry rather than tokenizing its constituents.
+    # Without this, "alarm" alone isn't KET, so the sentence gets rejected
+    # before any post-validation patch can rescue it. Constituent tokens
+    # ("alarm", "clock") are skipped during the per-token loop; the target
+    # itself is appended once at the end.
+    target_constituents: set = set()
+    target_present = False
+    if target and " " in target.strip() and target.lower() in sentence.lower():
+        target_present = True
+        target_constituents = {c.lower() for c in target.split()}
+
     tokens = _tokenize(sentence)
     words_used = []
     non_ket = []
     for i, tok in enumerate(tokens):
         if _is_proper_noun(tok) and i != 0:
+            continue
+        if tok.lower() in target_constituents:
             continue
         candidates = _candidate_roots(tok)
         # Skip if any candidate lemma is a function word (e.g. "doing" → "do").
@@ -109,6 +128,8 @@ async def validate_sentence(sentence: str, repos) -> ValidationResult:
             words_used.append(ket_root)
         else:
             non_ket.append(tok)
+    if target_present and target not in words_used:
+        words_used.append(target)
     return ValidationResult(
         ok=(len(non_ket) == 0),
         words_used=words_used,
