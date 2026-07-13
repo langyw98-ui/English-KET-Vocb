@@ -4,8 +4,11 @@ from flow.ket_partner.db import Repos
 async def apply_mastery_updates(state: dict, repos: Repos) -> None:
     intent = state.get("intent")
     if intent == "translation":
-        # wrong_words is filtered to last_sentence_words subset by
-        # evaluate_translation_node; all entries are KET canonical forms.
+        # wrong_words may contain non-KET entries (kept by
+        # evaluate_translation_node for DISPLAY feedback). Stats are
+        # KET-only: iterate last_sentence_words and check set membership,
+        # so non-KET entries in `wrong` are never matched and never reach
+        # apply_delta — no phantom stats rows.
         last_words = state.get("last_sentence_words") or []
         target = state.get("last_target_word")
         target_ctx = state.get("last_target_context") or ""

@@ -516,16 +516,16 @@ async def test_evaluate_node_dedupes_duplicate_wrong_words(setup):
 
 
 @pytest.mark.asyncio
-async def test_evaluate_node_drops_non_ket_words(setup):
-    """Regression: when generate_sentence_node exhausts retries and accepts
-    a draft with non_ket_words, the displayed sentence contains non-KET
-    words. If the LLM (correctly or incorrectly) flags one of those as
-    wrong, evaluate_translation_node must drop it before it reaches
-    vocab_stats — otherwise apply_delta creates a phantom stats row for
-    a word that isn't in KET vocabulary.
+async def test_evaluate_node_drops_words_not_in_sentence(setup):
+    """Regression: when the LLM hallucinates a word that isn't in the
+    displayed sentence (here 'xyzzy' for sentence 'The cat is in the
+    box.'), evaluate_translation_node must drop it — neither stats nor
+    display should mention it. KET words the LLM correctly flags ('in')
+    must still flow through normally on both paths.
     """
     from flow.ket_partner.translation_evaluator import WrongWord
-    # LLM flags both a KET word (in) and a non-KET word (xyzzy).
+    # LLM flags both a KET word in the sentence (in) and a hallucinated
+    # word that isn't (xyzzy).
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         eval_resp=TranslationEval(
@@ -543,18 +543,114 @@ async def test_evaluate_node_drops_non_ket_words(setup):
         {"messages": [HumanMessage(content="hi")]},
         config={"configurable": {"thread_id": "nonket-1"}},
     )
-    await agent.ainvoke(
+    result = await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在盒子")]},
         config={"configurable": {"thread_id": "nonket-1"}},
     )
+    ai_msg = result["messages"][-1].content
 
     # The KET wrong word must be tracked normally.
     in_stats = await setup.stats.get("in")
     assert in_stats is not None and in_stats["wrong_count"] == 1
 
-    # The non-KET word must NOT have a stats row.
+    # The hallucinated word must NOT have a stats row.
     xyzzy_stats = await setup.stats.get("xyzzy")
-    assert xyzzy_stats is None, "non-KET words must be filtered out before DB write"
+    assert xyzzy_stats is None, "words not in the sentence must not create stats rows"
+
+    # And it must NOT reach display feedback.
+    assert "xyzzy" not in ai_msg, (
+        f"hallucinated words must not appear in AI message; got: {ai_msg!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_keeps_non_ket_word_in_display_but_skips_stats(setup, monkeypatch):
+    """Regression: when the displayed sentence has a non-KET word (annotated
+    so the kid can still translate) AND the kid mistranslates it, the
+    evaluator's correction feedback MUST reach the kid. Stats are decoupled:
+    apply_mastery_updates iterates last_sentence_words (KET subset) only,
+    so the non-KET entry in wrong_words never triggers apply_delta — no
+    phantom stats row.
+
+    Before the fix, evaluate_translation_node filtered wrong_words to the
+    last_sentence_words subset, dropping non-KET entries silently. The kid
+    saw "你的翻译有误:" with no itemized correction for the non-KET word,
+    even though they explicitly got it wrong.
+    """
+    from flow.ket_partner import agent as agent_module
+    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner.translation_evaluator import WrongWord
+
+    async def fake_generate(*a, **kw):
+        return "The cat splashes in the water."
+
+    async def fake_validate(sentence, repos, **kwargs):
+        return ValidationResult(
+            ok=False,
+            words_used=["the", "cat", "in", "the", "water"],
+            non_ket_words=["splashes"],
+        )
+
+    async def fake_naturalness(llm, sentence, age=8):
+        return NaturalnessResult(ok=True, reason="")
+
+    async def fake_lookup_meanings(llm, sentence, words):
+        return [{"word": "splashes", "meaning": "溅水"}]
+
+    monkeypatch.setattr(agent_module, "generate_sentence", fake_generate)
+    monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
+    monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
+    monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
+
+    llm = _mock_llm(
+        intent_resp=IntentClassification(intent="translation", asked_word=None),
+        eval_resp=TranslationEval(
+            correct_translation="猫在水里溅水",
+            wrong_words=[
+                WrongWord(word="cat", kid_translation="狗", correct_translation="猫"),
+                WrongWord(word="splashes", kid_translation="跑", correct_translation="溅水"),
+            ],
+        ),
+        sentence_text="The dog runs.",
+    )
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="hi")]},
+        config={"configurable": {"thread_id": "nonket-fb-1"}},
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="狗在水里跑")]},
+        config={"configurable": {"thread_id": "nonket-fb-1"}},
+    )
+    ai_msg = result["messages"][-1].content
+
+    # Display: BOTH KET and non-KET wrong words must surface in the
+    # FEEDBACK section (between "你的翻译有误:" and "请把这句译成中文:").
+    # The non-KET word also appears later in the annotation block —
+    # checking only substring presence would pass even without the fix,
+    # so we slice the feedback section explicitly.
+    feedback_idx = ai_msg.find("你的翻译有误:")
+    prompt_idx = ai_msg.find("请把这句译成中文:")
+    assert feedback_idx != -1 and prompt_idx != -1, (
+        f"expected feedback + prompt blocks; got: {ai_msg!r}"
+    )
+    feedback_block = ai_msg[feedback_idx:prompt_idx]
+    assert "cat 的意思是：猫" in feedback_block, (
+        f"KET wrong word must show in feedback; got: {feedback_block!r}"
+    )
+    assert "splashes 的意思是：溅水" in feedback_block, (
+        f"non-KET wrong word must show in feedback; got: {feedback_block!r}"
+    )
+
+    # Stats: KET word gets delta -1; non-KET word gets NO row.
+    cat_stats = await setup.stats.get("cat")
+    assert cat_stats is not None and cat_stats["wrong_count"] == 1, (
+        f"KET wrong word must be tracked; got {cat_stats}"
+    )
+    splashes_stats = await setup.stats.get("splashes")
+    assert splashes_stats is None, "non-KET word must not create stats row"
 
 
 @pytest.mark.asyncio

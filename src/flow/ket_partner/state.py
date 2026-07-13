@@ -8,8 +8,11 @@ class BTPKetState(TypedDict):
     intent: Optional[str]
     asked_word: Optional[str]
     # Unified list of words the kid mistranslated. Populated by
-    # evaluate_translation_node (filtered to last_sentence_words subset so
-    # non-KET words from retry-fallback sentences can never reach the DB).
+    # evaluate_translation_node. Filtered to words that appear in the
+    # displayed sentence (KET canonical + non-KET tokens) so LLM
+    # hallucinations get dropped. Non-KET entries reach display for
+    # correction feedback but never reach vocab_stats — apply_mastery_updates
+    # iterates last_sentence_words (KET subset) only.
     # Format: [{"word": "eat", "kid_translation": "在",
     #           "correct_translation": "吃", "contrast": "..."}]
     wrong_words: Optional[List[Dict[str, str]]]

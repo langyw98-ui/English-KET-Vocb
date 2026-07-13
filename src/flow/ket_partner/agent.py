@@ -16,7 +16,7 @@ from flow.ket_partner.profile_summarizer import run_profile_summary
 from flow.ket_partner.sentence_generator import generate_sentence
 from flow.ket_partner.sentence_naturalness import check_naturalness
 from flow.ket_partner.multi_word_target import target_in_sentence
-from flow.ket_partner.sentence_validator import validate_sentence
+from flow.ket_partner.sentence_validator import _tokenize, validate_sentence
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
 from flow.ket_partner.vocab_selector import select_target_word
@@ -91,24 +91,33 @@ class KETPartnerAgent:
             kid_input=kid_input,
         )
         logger.debug(f"evaluate_translation_node: {result}")
-        # Filter to last_sentence_words subset. This is the safety net for:
-        # 1. Non-KET words — when generate_sentence_node exhausts retries and
-        #    accepts a draft with non_ket_words, those words appear in the
-        #    displayed sentence. The LLM may flag them. Without this filter
-        #    they'd reach apply_delta and create phantom stats rows.
-        # 2. LLM using wrong case / inflected forms — canonical lookup maps
-        #    "Eat" → "eat" so it matches the canonical form in last_words.
-        # 3. LLM inventing words not in the sentence — silently dropped.
-        # 4. LLM emitting the same word twice (observed in production: the
-        #    LLM flagged `snow` with two contradictory meanings). Dedup by
-        #    word — first entry wins.
-        # 5. LLM flagging a word whose kid_translation EXACTLY matches its
-        #    correct_translation (both non-empty). The evaluator prompt's
-        #    rule 3 forbids this, but when the kid's overall translation is
-        #    mostly wrong the LLM occasionally contaminates correct neighbors
-        #    anyway. A kid who wrote "我" for "I" (correct_translation "我")
-        #    is right by definition — drop it.
+        # Filter rules (in order):
+        # 1. Drop entries whose kid_translation EXACTLY matches their
+        #    correct_translation (both non-empty) — kid got it right, the
+        #    evaluator prompt's rule 3 forbids this but the LLM occasionally
+        #    contaminates correct neighbors when the overall translation is
+        #    mostly wrong.
+        # 2. Drop entries with empty correct_translation — usually function
+        #    words (be/will/do/to) that fold into sentence structure with no
+        #    single Chinese equivalent. Without this filter format_output
+        #    renders an empty "be 的意思是：".
+        # 3. Canonicalize via get_ket_word_any_context so case variants
+        #    ("Eat" → "eat") match the canonical form in last_sentence_words.
+        # 4. KEEP entries that are in the displayed sentence — covers KET
+        #    words (in last_sentence_words) AND non-KET words / tolerated
+        #    proper nouns (in the raw sentence's token set). Drop everything
+        #    else (LLM hallucinations of words not in the sentence).
+        #
+        # Non-KET words are kept for DISPLAY so the kid gets correction
+        # feedback ("splashes 的意思是：溅水"). Stats are decoupled:
+        # apply_mastery_updates iterates last_sentence_words (KET subset)
+        # only, so non-KET entries in wrong_words never trigger apply_delta
+        # — no phantom stats rows.
         last_words_set = set(state.get("last_sentence_words") or [])
+        last_sentence = state.get("last_english_sentence") or ""
+        displayed_tokens = {
+            t.lower().rstrip(".?!") for t in _tokenize(last_sentence)
+        } if last_sentence else set()
         seen_words: set[str] = set()
         filtered = []
         for entry in result.wrong_words:
@@ -122,28 +131,29 @@ class KETPartnerAgent:
                     f"kid_translation matches correct_translation ({entry.kid_translation!r})"
                 )
                 continue
-            # Drop entries the evaluator couldn't give a clear Chinese
-            # meaning for. Common for function words (be/will/do/to) that
-            # fold into the sentence structure and have no single Chinese
-            # equivalent. Without this filter format_output renders an empty
-            # "be 的意思是：". The sentence-level overall_correct flag still
-            # captures that the kid's translation was off.
             if not entry.correct_translation:
                 logger.debug(
                     f"evaluate_translation_node: dropping '{entry.word}' — "
                     f"empty correct_translation (likely a function word with no single Chinese equivalent)"
                 )
                 continue
-            if entry.word in last_words_set:
-                key = entry.word
-            else:
+            # Canonicalize KET words to the form tracked in last_sentence_words.
+            if entry.word not in last_words_set:
                 wr = await self.repos.vocab.get_ket_word_any_context(entry.word)
                 if wr and wr.word in last_words_set:
                     entry = entry.model_copy(update={"word": wr.word})
-                    key = wr.word
-                else:
-                    logger.debug(f"evaluate_translation_node: dropping non-KET word '{entry.word}'")
-                    continue
+            # Keep if the (possibly canonicalized) entry is in the displayed
+            # sentence — KET words match last_words_set; non-KET words match
+            # the raw token set. Drops LLM hallucinations of words not in
+            # the sentence at all.
+            if entry.word in last_words_set or entry.word.lower() in displayed_tokens:
+                key = entry.word
+            else:
+                logger.debug(
+                    f"evaluate_translation_node: dropping '{entry.word}' — "
+                    f"not in displayed sentence"
+                )
+                continue
             if key in seen_words:
                 logger.debug(f"evaluate_translation_node: dropping duplicate wrong_word '{key}'")
                 continue
