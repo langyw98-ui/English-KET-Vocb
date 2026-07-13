@@ -427,3 +427,53 @@ async def test_validator_handles_trailing_period_in_sentence_final_word(repos):
     r = await validate_sentence("The cat is big.", repos)
     assert r.ok is True, f"trailing period must not break lookup; got non_ket={r.non_ket_words}"
     assert "big" in r.words_used
+
+
+@pytest.mark.asyncio
+async def test_validator_picks_lowercase_for_sentence_initial_capitalized_token(repos):
+    """Regression: 'It' (sentence-initial pronoun) was recorded as 'IT'
+    (the abbreviation entry) because get_ket_word_any_context used
+    `ORDER BY word ASC` as the final tiebreaker — 'IT' < 'it' in ASCII,
+    so the uppercase canonical form won for any lookup that matched both
+    rows via COLLATE NOCASE.
+
+    Fix: _candidate_roots puts the original-case token first so the SQL
+    layer still has case info to disambiguate with; and
+    get_ket_word_any_context adds two tiebreakers — exact-case BINARY
+    match preferred, then lowercase canonical preferred — so a
+    Capitalized sentence-initial token resolves to the lowercase pronoun
+    entry while an all-caps 'IT' mid-sentence still resolves to the
+    abbreviation (covered by the next test)."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('it', '', 'pron', 0), ('IT', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("It is a cat.", repos)
+    assert r.ok is True
+    assert "it" in r.words_used, (
+        f"capitalized 'It' (first-letter-only) must map to pronoun 'it', "
+        f"got {r.words_used}"
+    )
+    assert "IT" not in r.words_used
+
+
+@pytest.mark.asyncio
+async def test_validator_picks_uppercase_for_allcaps_token_in_middle(repos):
+    """Regression guard for the lowercase-preference tiebreaker: when
+    both 'it' (pronoun) and 'IT' (abbreviation) exist in KET, an all-caps
+    'IT' mid-sentence must still map to the abbreviation entry. The
+    lowercase-preference tiebreaker only fires when there's no exact-case
+    BINARY match, so 'IT' wins via BINARY before the lowercase rule is
+    considered."""
+    await repos.vocab._db.execute(
+        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
+        "('it', '', 'pron', 0), ('IT', '', 'n', 0)"
+    )
+    await repos.vocab._db.commit()
+    r = await validate_sentence("The cat and IT are big.", repos)
+    assert r.ok is True
+    assert "IT" in r.words_used, (
+        f"all-caps 'IT' must map to abbreviation 'IT', got {r.words_used}"
+    )
+    assert "it" not in r.words_used

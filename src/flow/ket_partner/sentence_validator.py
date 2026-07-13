@@ -35,13 +35,18 @@ def _candidate_roots(token: str) -> list:
     """Return possible lemma candidates for an English token, handling
     common inflections (verb tense, noun plural, comparatives).
 
-    Strategy: the lowercased token itself is always tried first — many words
-    (the, is, cat) are in the KET vocabulary directly. If that doesn't match,
-    fall back to: explicit _LEMMAS entries (irregulars like went→go), then
-    rule-based suffix stripping (wears→wear, cats→cat). The validator asks
-    `get_ket_word_any_context` for each candidate in order — first match
-    wins, which prevents over-stemming (e.g., "bins" → tries "bin" only if
-    "bin" is actually a known word).
+    Strategy: the original-case token is tried first so the SQL layer can
+    disambiguate same-spelling entries that differ only by case (pronoun
+    'it' vs abbreviation 'IT' — both are KET entries; a Capitalized
+    sentence-initial token should map to the lowercase form, while an
+    all-caps mid-sentence token should map to the uppercase form). The
+    lowercased token follows; many words (the, is, cat) are stored
+    lowercase. If neither matches, fall back to: explicit _LEMMAS entries
+    (irregulars like went→go), then rule-based suffix stripping (wears→
+    wear, cats→cat). The validator asks `get_ket_word_any_context` for
+    each candidate in order — first match wins, which prevents
+    over-stemming (e.g., "bins" → tries "bin" only if "bin" is actually
+    a known word).
 
     `lower` is the punctuation-stripped form so inflection rules like
     `endswith("s")` work on sentence-final tokens (e.g. "runs." → "runs").
@@ -50,7 +55,11 @@ def _candidate_roots(token: str) -> list:
     """
     raw = token.lower()
     lower = raw.rstrip(".?!")
-    candidates = [raw]
+    candidates = []
+    orig = token.rstrip(".?!")
+    if orig:
+        candidates.append(orig)
+    candidates.append(raw)
     if lower != raw:
         candidates.append(lower)
     # KET dictionary stores some entries with terminal punctuation attached

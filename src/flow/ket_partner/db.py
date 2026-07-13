@@ -158,12 +158,26 @@ class VocabRepo:
         lexicographically first context. Stability matters: callers like
         asks_meaning rely on a deterministic answer for the same input.
         Spec §5.1.
+
+        Case disambiguation: when KET has same-spelling entries differing
+        only by case (pronoun 'it' + abbreviation 'IT'), the WHERE clause's
+        COLLATE NOCASE matches both rows. The ORDER BY then tiebreaks:
+          1. empty context preferred (default sense)
+          2. context ASC for determinism
+          3. exact-case BINARY match preferred — so all-caps 'IT' mid-
+             sentence maps to the abbreviation, while 'It' / 'it' lookups
+             fall through to the next rule
+          4. lowercase canonical preferred — for tokens that aren't all-
+             caps (e.g. sentence-initial 'It' where the capitalization is
+             grammatical, not semantic), the lowercase entry wins
         """
         async with self._db.execute(
             "SELECT word, context FROM ket_vocabulary "
             "WHERE word = ? COLLATE NOCASE "
-            "ORDER BY (context = '') DESC, context ASC LIMIT 1",
-            (word,),
+            "ORDER BY (context = '') DESC, context ASC, "
+            "(word = ? COLLATE BINARY) DESC, "
+            "(word = lower(word)) DESC, word ASC LIMIT 1",
+            (word, word),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
