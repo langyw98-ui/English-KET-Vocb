@@ -16,8 +16,9 @@ async def _fetch_all_stats(repos: Repos) -> List[dict]:
         "SELECT v.word, v.context, v.pos, s.exposed_count, s.correct_count, "
         "s.wrong_count, s.mastery_score, s.status "
         "FROM ket_vocabulary v "
-        "LEFT JOIN vocab_stats s ON v.word = s.word AND v.context = s.context "
-        "ORDER BY v.word, v.context"
+        "LEFT JOIN vocab_stats s ON v.word = s.word AND v.context = s.context AND s.user_id = ? "
+        "ORDER BY v.word, v.context",
+        (repos._user_id,),
     ) as cur:
         rows = await cur.fetchall()
     return [

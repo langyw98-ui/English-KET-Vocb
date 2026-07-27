@@ -1,13 +1,17 @@
 import csv
 import json
+import re
 import sqlite3
 from datetime import datetime
 from os.path import dirname, join
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional, TYPE_CHECKING
 
 import aiosqlite
 
 from flow.common import logger
+
+if TYPE_CHECKING:
+    from flow.ket_partner.config import KetConfig
 
 
 class WordRef(NamedTuple):
@@ -51,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_vocab_topics_lookup ON ket_vocab_topics(word, con
 CREATE TABLE IF NOT EXISTS vocab_stats (
     word          TEXT NOT NULL,
     context       TEXT NOT NULL DEFAULT '',
+    user_id       TEXT NOT NULL DEFAULT 'default',
     exposed_count INTEGER DEFAULT 0,
     correct_count INTEGER DEFAULT 0,
     wrong_count   INTEGER DEFAULT 0,
@@ -58,12 +63,13 @@ CREATE TABLE IF NOT EXISTS vocab_stats (
     status        TEXT DEFAULT 'new',
     first_seen_at TIMESTAMP,
     last_seen_at  TIMESTAMP,
-    PRIMARY KEY (word, context)
+    PRIMARY KEY (user_id, word, context)
 );
-CREATE INDEX IF NOT EXISTS idx_stats_status ON vocab_stats(status);
+CREATE INDEX IF NOT EXISTS idx_stats_user_status ON vocab_stats(user_id, status);
 
 CREATE TABLE IF NOT EXISTS conversation_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL DEFAULT 'default',
     role         TEXT,
     content      TEXT,
     words_used   TEXT,
@@ -71,22 +77,33 @@ CREATE TABLE IF NOT EXISTS conversation_log (
     turn_id      INTEGER,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_log_created ON conversation_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_log_user_id ON conversation_log(user_id, id);
 
 CREATE TABLE IF NOT EXISTS kid_profile (
-    id                  INTEGER PRIMARY KEY DEFAULT 1,
-    nickname            TEXT,
-    age                 INTEGER,
-    total_turns         INTEGER DEFAULT 0,
-    weakness_words      TEXT,
-    dialogue_strategy   TEXT,
-    in_refill_mode      INTEGER DEFAULT 0,
-    last_new_word_turn  INTEGER DEFAULT 0,
-    last_summary_turn   INTEGER DEFAULT 0,
-    current_topic       TEXT,
-    updated_at          TIMESTAMP,
-    CHECK (id = 1)
+    user_id            TEXT PRIMARY KEY,
+    total_turns        INTEGER DEFAULT 0,
+    weakness_words     TEXT,
+    dialogue_strategy  TEXT,
+    in_refill_mode     INTEGER DEFAULT 0,
+    last_new_word_turn INTEGER DEFAULT 0,
+    last_summary_turn  INTEGER DEFAULT 0,
+    current_topic      TEXT,
+    updated_at         TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id          TEXT PRIMARY KEY,
+    nickname    TEXT NOT NULL,
+    age         INTEGER NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS recent_sentences (
+    user_id     TEXT NOT NULL,
+    sentence    TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_recent_user_created ON recent_sentences(user_id, created_at DESC);
 """
 
 
@@ -95,21 +112,10 @@ def _derive_status(
     mastery_score: int,
     is_target: bool = False,
 ) -> str:
-    """Derive vocab_stats.status from inputs.
-
-    'exposed':  passive exposure only, never been target, mastery < MASTERY_CAP
-    'learning': has been target OR demoted from mastered, mastery < MASTERY_CAP
-    'mastered': mastery_score >= MASTERY_CAP
-
-    With CAP=2 there is no absorption buffer — mastery < 2 always means
-    'not mastered', so a single wrong answer (2→1) demotes immediately.
-    """
+    """Derive vocab_stats.status from inputs."""
     if mastery_score >= MASTERY_CAP:
         return "mastered"
     if current_status == "mastered":
-        # Below cap (mastery <= 1) and was mastered → demote to learning.
-        # The conditional keeps the demotion threshold explicit in case CAP
-        # is raised in the future; with CAP=2 the else branch is unreachable.
         return "learning" if mastery_score <= 1 else "mastered"
     if is_target:
         return "learning"
@@ -119,8 +125,9 @@ def _derive_status(
 
 
 class VocabRepo:
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default"):
         self._db = db
+        self._user_id = user_id
 
     async def get_topics_for_word(self, word: str, context: str = "") -> List[str]:
         async with self._db.execute(
@@ -134,13 +141,6 @@ class VocabRepo:
     async def get_ket_word(
         self, word: str, context: str = ""
     ) -> Optional[WordRef]:
-        """Precise (word, context) lookup, case-insensitive on word.
-
-        Use when the caller already knows the WordRef (target path). For
-        token-based lookups where sense is unknown (validator, canonical
-        form, asks_meaning), use get_ket_word_any_context instead — see
-        Spec §5.1.
-        """
         async with self._db.execute(
             "SELECT word, context FROM ket_vocabulary "
             "WHERE word = ? COLLATE NOCASE AND context = ? LIMIT 1",
@@ -152,25 +152,6 @@ class VocabRepo:
         return WordRef(word=row[0], context=row[1])
 
     async def get_ket_word_any_context(self, word: str) -> Optional[WordRef]:
-        """Lookup by word only; for token-based KET-membership checks.
-
-        Returns (word, '') if it exists (the 'default sense' row), else the
-        lexicographically first context. Stability matters: callers like
-        asks_meaning rely on a deterministic answer for the same input.
-        Spec §5.1.
-
-        Case disambiguation: when KET has same-spelling entries differing
-        only by case (pronoun 'it' + abbreviation 'IT'), the WHERE clause's
-        COLLATE NOCASE matches both rows. The ORDER BY then tiebreaks:
-          1. empty context preferred (default sense)
-          2. context ASC for determinism
-          3. exact-case BINARY match preferred — so all-caps 'IT' mid-
-             sentence maps to the abbreviation, while 'It' / 'it' lookups
-             fall through to the next rule
-          4. lowercase canonical preferred — for tokens that aren't all-
-             caps (e.g. sentence-initial 'It' where the capitalization is
-             grammatical, not semantic), the lowercase entry wins
-        """
         async with self._db.execute(
             "SELECT word, context FROM ket_vocabulary "
             "WHERE word = ? COLLATE NOCASE "
@@ -188,11 +169,11 @@ class VocabRepo:
         sql = (
             "SELECT v.word, v.context FROM ket_vocabulary v "
             "JOIN ket_vocab_topics t ON v.word = t.word AND v.context = t.context "
-            "LEFT JOIN vocab_stats s ON v.word = s.word AND v.context = s.context "
+            "LEFT JOIN vocab_stats s ON v.word = s.word AND v.context = s.context AND s.user_id = ? "
             "WHERE t.topic = ? AND s.word IS NULL "
             "ORDER BY RANDOM() LIMIT 1"
         )
-        async with self._db.execute(sql, (topic,)) as cur:
+        async with self._db.execute(sql, (self._user_id, topic)) as cur:
             rows = await cur.fetchall()
         return [WordRef(word=r[0], context=r[1]) for r in rows]
 
@@ -204,39 +185,50 @@ class VocabRepo:
             "    WHERE t.word = v.word AND t.context = v.context"
             ") AND NOT EXISTS ("
             "    SELECT 1 FROM vocab_stats s "
-            "    WHERE s.word = v.word AND s.context = v.context"
+            "    WHERE s.word = v.word AND s.context = v.context AND s.user_id = ?"
             ") "
             "ORDER BY RANDOM() LIMIT 1"
         )
-        async with self._db.execute(sql) as cur:
+        async with self._db.execute(sql, (self._user_id,)) as cur:
             rows = await cur.fetchall()
         return [WordRef(word=r[0], context=r[1]) for r in rows]
 
     async def topics_with_unmastered(self, exclude: Optional[str] = None) -> List[str]:
         sql = (
             "SELECT t.topic FROM ket_vocab_topics t "
-            "LEFT JOIN vocab_stats s ON t.word = s.word AND t.context = s.context "
+            "LEFT JOIN vocab_stats s ON t.word = s.word AND t.context = s.context AND s.user_id = ? "
             "WHERE (s.status IS NULL OR s.status != 'mastered')"
         )
-        params = ()
+        params: list = [self._user_id]
         if exclude:
             sql += " AND t.topic != ?"
-            params = (exclude,)
+            params.append(exclude)
         sql += " GROUP BY t.topic ORDER BY RANDOM() LIMIT 1"
         async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [r[0] for r in rows]
 
+    async def total_count(self) -> int:
+        async with self._db.execute("SELECT COUNT(*) FROM ket_vocabulary") as cur:
+            row = await cur.fetchone()
+        return row[0] if row else 0
+
 
 class StatsRepo:
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(
+        self,
+        db: aiosqlite.Connection,
+        user_id: str = "default",
+        config: Optional["KetConfig"] = None,
+    ):
         self._db = db
+        self._user_id = user_id
+        if config is None:
+            from flow.ket_partner.config import load_config
+            config = load_config()
+        self._config = config
 
     async def _vocab_has_default_sense(self, word: str) -> bool:
-        """Spec §4.4: returns True iff (word, '') exists in ket_vocabulary.
-        Used by apply_delta to silently skip stats writes that would
-        produce orphan rows for multi-sense words like 'smart' that have
-        no default-sense row in vocab."""
         async with self._db.execute(
             "SELECT 1 FROM ket_vocabulary WHERE word = ? AND context = '' LIMIT 1",
             (word,),
@@ -247,8 +239,8 @@ class StatsRepo:
         async with self._db.execute(
             "SELECT word, context, exposed_count, correct_count, wrong_count, "
             "mastery_score, status, first_seen_at, last_seen_at "
-            "FROM vocab_stats WHERE word = ? AND context = ?",
-            (word, context),
+            "FROM vocab_stats WHERE user_id = ? AND word = ? AND context = ?",
+            (self._user_id, word, context),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
@@ -273,12 +265,6 @@ class StatsRepo:
         exposed: bool = False,
         is_target: bool = False,
     ) -> Optional[dict]:
-        # Orphan-skip guard (Spec §4.4). When context="" (scaffolding path),
-        # the word may be one of the 7 multi-sense words with no default row
-        # in vocab. Writing stats here would produce a row the /exportstats
-        # LEFT JOIN can't match — silent no-op instead. Non-empty context
-        # always comes from the target path (vocab_selector picked it from
-        # ket_vocabulary), so existence is guaranteed and the guard skipped.
         if context == "" and not await self._vocab_has_default_sense(word):
             return None
 
@@ -288,12 +274,13 @@ class StatsRepo:
             score = min(MASTERY_CAP, max(0, delta))
             await self._db.execute(
                 "INSERT INTO vocab_stats "
-                "(word, context, exposed_count, correct_count, wrong_count, "
+                "(word, context, user_id, exposed_count, correct_count, wrong_count, "
                 "mastery_score, status, first_seen_at, last_seen_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     word,
                     context,
+                    self._user_id,
                     1 if exposed else 0,
                     1 if delta > 0 else 0,
                     1 if delta < 0 else 0,
@@ -311,7 +298,7 @@ class StatsRepo:
             await self._db.execute(
                 "UPDATE vocab_stats SET exposed_count=?, correct_count=?, "
                 "wrong_count=?, mastery_score=?, status=?, last_seen_at=? "
-                "WHERE word=? AND context=?",
+                "WHERE user_id=? AND word=? AND context=?",
                 (
                     new_exposed,
                     new_correct,
@@ -319,6 +306,7 @@ class StatsRepo:
                     new_score,
                     _derive_status(existing["status"], new_score, is_target=is_target),
                     now,
+                    self._user_id,
                     word,
                     context,
                 ),
@@ -328,25 +316,25 @@ class StatsRepo:
 
     async def learning_count(self) -> int:
         async with self._db.execute(
-            "SELECT COUNT(*) FROM vocab_stats WHERE status='learning'"
+            "SELECT COUNT(*) FROM vocab_stats WHERE user_id=? AND status='learning'",
+            (self._user_id,),
         ) as cur:
             row = await cur.fetchone()
-        return row[0]
+        return row[0] if row else 0
 
     async def oldest_learning_word(self) -> Optional[WordRef]:
-        # Two-tier: 'learning' first; fall back to oldest 'exposed' so a
-        # scaffolding-only word can promote to active target when the
-        # learning pool dries up. Spec §5.2.
         async with self._db.execute(
-            "SELECT word, context FROM vocab_stats WHERE status='learning' "
-            "ORDER BY last_seen_at ASC LIMIT 1"
+            "SELECT word, context FROM vocab_stats WHERE user_id=? AND status='learning' "
+            "ORDER BY last_seen_at ASC LIMIT 1",
+            (self._user_id,),
         ) as cur:
             row = await cur.fetchone()
         if row:
             return WordRef(word=row[0], context=row[1])
         async with self._db.execute(
-            "SELECT word, context FROM vocab_stats WHERE status='exposed' "
-            "ORDER BY last_seen_at ASC LIMIT 1"
+            "SELECT word, context FROM vocab_stats WHERE user_id=? AND status='exposed' "
+            "ORDER BY last_seen_at ASC LIMIT 1",
+            (self._user_id,),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
@@ -356,32 +344,121 @@ class StatsRepo:
     async def increment_exposed(
         self, word: str, context: str = "", is_target: bool = False
     ) -> None:
-        # delta=0 leaves mastery/correct/wrong unchanged; exposed=True
-        # increments exposed_count; is_target threads through to status.
-        # Orphan-skip inherited from apply_delta.
         await self.apply_delta(word, context=context, delta=0, exposed=True, is_target=is_target)
+
+    async def count_by_category(self, category: str) -> int:
+        sql, params = self._category_where_sql(category)
+        async with self._db.execute(f"SELECT COUNT(*) FROM ({sql})", params) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def list_by_category(
+        self, category: str, offset: int = 0, limit: int = 100
+    ) -> List[dict]:
+        sql, params = self._category_where_sql(category)
+        sql += " LIMIT ? OFFSET ?"
+        full_params = (*params, limit, offset)
+        async with self._db.execute(sql, full_params) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "word": r[0],
+                "context": r[1] or "",
+                "mastery_score": r[2] if len(r) > 2 else 0,
+                "exposed_count": r[3] if len(r) > 3 else 0,
+                "correct_count": r[4] if len(r) > 4 else 0,
+                "wrong_count": r[5] if len(r) > 5 else 0,
+                "status": r[6] if len(r) > 6 else "new",
+            }
+            for r in rows
+        ]
+
+    def _category_where_sql(self, category: str) -> tuple[str, tuple]:
+        wc_min = self._config.struggling_threshold.wrong_count_min
+        ec_min = self._config.struggling_threshold.exposed_count_min
+
+        if category == "mastered":
+            return (
+                "SELECT word, context, mastery_score, exposed_count, correct_count, wrong_count, status "
+                "FROM vocab_stats WHERE user_id=? AND status='mastered'",
+                (self._user_id,),
+            )
+        if category == "learning":
+            return (
+                "SELECT word, context, mastery_score, exposed_count, correct_count, wrong_count, status "
+                "FROM vocab_stats WHERE user_id=? AND status='learning'",
+                (self._user_id,),
+            )
+        if category == "struggling":
+            return (
+                "SELECT word, context, mastery_score, exposed_count, correct_count, wrong_count, status "
+                "FROM vocab_stats WHERE user_id=? "
+                "AND status NOT IN ('mastered', 'learning') "
+                "AND exposed_count > 0 "
+                "AND (wrong_count >= ? OR (exposed_count >= ? AND mastery_score = 0))",
+                (self._user_id, wc_min, ec_min),
+            )
+        if category == "used":
+            return (
+                "SELECT word, context, mastery_score, exposed_count, correct_count, wrong_count, status "
+                "FROM vocab_stats WHERE user_id=? "
+                "AND exposed_count > 0 "
+                "AND status NOT IN ('mastered', 'learning') "
+                "AND NOT (wrong_count >= ? OR (exposed_count >= ? AND mastery_score = 0))",
+                (self._user_id, wc_min, ec_min),
+            )
+        if category == "unused":
+            return (
+                "SELECT v.word, v.context, COALESCE(s.mastery_score, 0) AS mastery_score, "
+                "COALESCE(s.exposed_count, 0) AS exposed_count, "
+                "COALESCE(s.correct_count, 0) AS correct_count, "
+                "COALESCE(s.wrong_count, 0) AS wrong_count, "
+                "COALESCE(s.status, 'new') AS status "
+                "FROM ket_vocabulary v "
+                "LEFT JOIN vocab_stats s ON s.word = v.word AND s.context = v.context AND s.user_id = ? "
+                "WHERE s.word IS NULL OR s.exposed_count = 0",
+                (self._user_id,),
+            )
+        raise ValueError(f"invalid category: {category}")
 
 
 class ProfileRepo:
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default"):
         self._db = db
+        self._user_id = user_id
 
     async def get(self) -> dict:
         async with self._db.execute(
-            "SELECT nickname, age, total_turns, weakness_words, dialogue_strategy, "
-            "in_refill_mode, last_new_word_turn, last_summary_turn, current_topic, updated_at "
-            "FROM kid_profile WHERE id=1"
+            "SELECT u.nickname, u.age, p.total_turns, p.weakness_words, p.dialogue_strategy, "
+            "p.in_refill_mode, p.last_new_word_turn, p.last_summary_turn, p.current_topic, p.updated_at "
+            "FROM kid_profile p "
+            "LEFT JOIN users u ON p.user_id = u.id "
+            "WHERE p.user_id = ?",
+            (self._user_id,),
         ) as cur:
             row = await cur.fetchone()
+        if row is None:
+            return {
+                "nickname": "宝贝",
+                "age": 8,
+                "total_turns": 0,
+                "weakness_words": [],
+                "dialogue_strategy": None,
+                "in_refill_mode": 0,
+                "last_new_word_turn": 0,
+                "last_summary_turn": 0,
+                "current_topic": None,
+                "updated_at": None,
+            }
         return {
-            "nickname": row[0],
-            "age": row[1],
-            "total_turns": row[2],
+            "nickname": row[0] or "宝贝",
+            "age": row[1] if row[1] is not None else 8,
+            "total_turns": row[2] or 0,
             "weakness_words": json.loads(row[3]) if row[3] else [],
             "dialogue_strategy": row[4],
-            "in_refill_mode": row[5],
-            "last_new_word_turn": row[6],
-            "last_summary_turn": row[7],
+            "in_refill_mode": row[5] or 0,
+            "last_new_word_turn": row[6] or 0,
+            "last_summary_turn": row[7] or 0,
             "current_topic": row[8],
             "updated_at": row[9],
         }
@@ -389,32 +466,46 @@ class ProfileRepo:
     async def update(self, **fields) -> None:
         if not fields:
             return
-        allowed = {
-            "nickname", "age", "total_turns", "weakness_words",
-            "dialogue_strategy", "in_refill_mode", "last_new_word_turn",
-            "last_summary_turn", "current_topic",
+        profile_allowed = {
+            "total_turns", "weakness_words", "dialogue_strategy",
+            "in_refill_mode", "last_new_word_turn", "last_summary_turn",
+            "current_topic",
         }
-        set_parts = []
-        values = []
-        for k, v in fields.items():
-            if k not in allowed:
-                continue
-            if k in ("weakness_words",):
-                v = json.dumps(v, ensure_ascii=False)
-            set_parts.append(f"{k}=?")
-            values.append(v)
-        set_parts.append("updated_at=?")
-        values.append(datetime.utcnow())
-        await self._db.execute(
-            f"UPDATE kid_profile SET {', '.join(set_parts)} WHERE id=1",
-            values,
-        )
+        user_allowed = {"nickname", "age"}
+
+        user_updates = {k: v for k, v in fields.items() if k in user_allowed}
+        if user_updates:
+            set_parts = [f"{k}=?" for k in user_updates.keys()]
+            values = list(user_updates.values())
+            values.append(self._user_id)
+            await self._db.execute(
+                f"UPDATE users SET {', '.join(set_parts)} WHERE id=?",
+                values,
+            )
+
+        profile_updates = {k: v for k, v in fields.items() if k in profile_allowed}
+        if profile_updates:
+            set_parts = []
+            values = []
+            for k, v in profile_updates.items():
+                if k == "weakness_words":
+                    v = json.dumps(v, ensure_ascii=False)
+                set_parts.append(f"{k}=?")
+                values.append(v)
+            set_parts.append("updated_at=?")
+            values.append(datetime.utcnow())
+            values.append(self._user_id)
+            await self._db.execute(
+                f"UPDATE kid_profile SET {', '.join(set_parts)} WHERE user_id=?",
+                values,
+            )
         await self._db.commit()
 
 
 class LogRepo:
-    def __init__(self, db: aiosqlite.Connection):
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default"):
         self._db = db
+        self._user_id = user_id
 
     async def append(
         self,
@@ -424,17 +515,11 @@ class LogRepo:
         target_words: Optional[List[Dict[str, str]]] = None,
         turn_id: Optional[int] = None,
     ) -> None:
-        """Append a row to conversation_log.
-
-        target_words entries carry shape {"word": str, "context": str}
-        (context defaults to "" if absent) so init_state can recover both
-        fields when rehydrating across turns. Storage is unchanged —
-        json.dumps handles dicts the same way it handled bare strings.
-        """
         await self._db.execute(
-            "INSERT INTO conversation_log (role, content, words_used, target_words, turn_id) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO conversation_log (user_id, role, content, words_used, target_words, turn_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
+                self._user_id,
                 role,
                 content,
                 json.dumps(words_used or [], ensure_ascii=False),
@@ -447,10 +532,10 @@ class LogRepo:
     async def recent(self, limit: int = 5) -> List[dict]:
         async with self._db.execute(
             "SELECT role, content, words_used, target_words, turn_id, created_at "
-            "FROM conversation_log ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "FROM conversation_log WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (self._user_id, limit),
         ) as cur:
-            rows = await cur.fetchall()
+            rows = list(await cur.fetchall())
         rows.reverse()
         return [
             {
@@ -465,24 +550,10 @@ class LogRepo:
         ]
 
     async def last_ai_message(self) -> Optional[dict]:
-        """Return the most recent AI message IN THE CURRENT SESSION.
-
-        A session boundary is marked by a row with role='system',
-        content='session_start' (written by main.py on REPL startup).
-        Only AI rows AFTER the most recent such marker are considered.
-        If no marker exists yet (fresh DB), all AI rows are eligible —
-        backward compat for databases populated before this feature.
-
-        Returns dict with keys: content (str), words_used (List[str]),
-        target_words (List[Dict[str, str]] — each entry {"word","context"}).
-        """
         async with self._db.execute(
             "SELECT content, words_used, target_words FROM conversation_log "
-            "WHERE role='ai' AND id > COALESCE("
-            "    (SELECT MAX(id) FROM conversation_log "
-            "     WHERE role='system' AND content='session_start'),"
-            "    0"
-            ") ORDER BY id DESC LIMIT 1"
+            "WHERE role='ai' AND user_id=? ORDER BY id DESC LIMIT 1",
+            (self._user_id,),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
@@ -493,22 +564,71 @@ class LogRepo:
             "target_words": json.loads(row[2]) if row[2] else [],
         }
 
-    async def append_session_start(self) -> None:
-        """Mark the start of a new REPL session. Subsequent calls to
-        last_ai_message will ignore AI rows from before this marker,
-        so a kid who exits mid-sentence won't be shown the explanation
-        of that sentence on restart.
-        """
-        await self.append(role="system", content="session_start")
+
+class RecentSentencesRepo:
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default"):
+        self._db = db
+        self._user_id = user_id
+
+    async def list_recent(self, limit: int = 20) -> List[str]:
+        async with self._db.execute(
+            "SELECT sentence FROM recent_sentences WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (self._user_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
+    async def append(self, sentence: str, window: int = 20) -> None:
+        now = datetime.utcnow()
+        await self._db.execute(
+            "INSERT INTO recent_sentences (user_id, sentence, created_at) VALUES (?, ?, ?)",
+            (self._user_id, sentence, now),
+        )
+        await self._db.execute(
+            "DELETE FROM recent_sentences WHERE user_id=? AND rowid NOT IN ("
+            "    SELECT rowid FROM recent_sentences WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?"
+            ")",
+            (self._user_id, self._user_id, window),
+        )
+        await self._db.commit()
+
+    async def list_recent_scaffolding(self, window: int = 20) -> List[List[str]]:
+        sentences = await self.list_recent(limit=window)
+        scaffolding_list: List[List[str]] = []
+        pattern = re.compile(r"[A-Za-z']+")
+        for s in sentences:
+            tokens = [t.lower() for t in pattern.findall(s)]
+            scaffolding_list.append(tokens)
+        return scaffolding_list
 
 
 class Repos:
-    def __init__(self, db: aiosqlite.Connection):
-        self.vocab = VocabRepo(db)
-        self.stats = StatsRepo(db)
-        self.profile = ProfileRepo(db)
-        self.log = LogRepo(db)
+    def __init__(
+        self,
+        db: aiosqlite.Connection,
+        user_id: str = "default",
+        config: Optional["KetConfig"] = None,
+    ):
         self._db = db
+        self._user_id = user_id
+        if config is None:
+            from flow.ket_partner.config import load_config
+            config = load_config()
+        self._config = config
+        self.vocab = VocabRepo(db, user_id)
+        self.stats = StatsRepo(db, user_id, self._config)
+        self.profile = ProfileRepo(db, user_id)
+        self.log = LogRepo(db, user_id)
+        self.recent = RecentSentencesRepo(db, user_id)
+
+    @classmethod
+    def for_user(
+        cls,
+        db: aiosqlite.Connection,
+        user_id: str = "default",
+        config: Optional["KetConfig"] = None,
+    ) -> "Repos":
+        return cls(db, user_id, config)
 
     async def close(self):
         await self._db.close()
@@ -517,19 +637,31 @@ class Repos:
 _DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "KET_vocabulary.csv")
 
 
-async def init_db(db_path: str, csv_path: Optional[str] = None) -> Repos:
+async def init_db(
+    db_path: str,
+    csv_path: Optional[str] = None,
+    default_nickname: str = "宝贝",
+    default_age: int = 8,
+) -> aiosqlite.Connection:
     db = await aiosqlite.connect(db_path)
     db.row_factory = sqlite3.Row
+    await db.execute("PRAGMA journal_mode=WAL;")
+    await db.execute("PRAGMA busy_timeout=5000;")
     await db.executescript(_SCHEMA)
+
     await db.execute(
-        "INSERT OR IGNORE INTO kid_profile (id, total_turns) VALUES (1, 0)"
+        "INSERT OR IGNORE INTO users (id, nickname, age) VALUES ('default', ?, ?)",
+        (default_nickname, default_age),
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO kid_profile (user_id, total_turns) VALUES ('default', 0)",
     )
     await db.commit()
 
     if csv_path:
         await _import_csv(db, csv_path)
 
-    return Repos(db)
+    return db
 
 
 async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:

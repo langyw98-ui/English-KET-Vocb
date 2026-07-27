@@ -2,10 +2,8 @@ import tempfile
 
 import pytest
 
-from flow.ket_partner.config import load_config
 from flow.ket_partner.db import init_db
-from flow.ket_partner.state import BTPKetState
-from flow.ket_partner.nodes import apply_mastery_updates
+from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 
 
 @pytest.fixture
@@ -119,11 +117,6 @@ async def test_asks_meaning_deducts_asked_word(repos):
     await apply_mastery_updates(state, repos)
     cat = await repos.stats.get("cat")
     assert cat["wrong_count"] == 1
-
-
-from flow.ket_partner.nodes import format_output_text
-
-
 def test_format_output_translation_no_wrong():
     state = {
         "intent": "translation",

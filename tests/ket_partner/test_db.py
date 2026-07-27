@@ -1,7 +1,7 @@
-import sqlite3
+from typing import Optional
 import pytest
 
-from flow.ket_partner.db import _derive_status, init_db, VocabRepo, StatsRepo, ProfileRepo, LogRepo
+from flow.ket_partner.db import _derive_status, init_db, Repos
 
 
 def test_derive_status_mastered_at_score_cap():
@@ -43,10 +43,15 @@ def test_derive_status_preserves_exposed_and_learning_below_cap():
     assert _derive_status("learning", 2) == "mastered"
 
 
+async def _init_repos(db_path: str, csv_path: Optional[str] = None) -> Repos:
+    db = await init_db(db_path, csv_path=csv_path)
+    return Repos.for_user(db, "default")
+
+
 @pytest.mark.asyncio
 async def test_init_db_creates_tables(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
-    async with repos.vocab._db.execute(
+    db = await init_db(temp_db_path, csv_path=None)
+    async with db.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     ) as cur:
         rows = await cur.fetchall()
@@ -56,6 +61,8 @@ async def test_init_db_creates_tables(temp_db_path):
     assert "vocab_stats" in table_names
     assert "conversation_log" in table_names
     assert "kid_profile" in table_names
+    assert "users" in table_names
+    assert "recent_sentences" in table_names
     assert "ket_word_topics" not in table_names   # old name must be gone
 
 
@@ -63,7 +70,7 @@ async def test_init_db_creates_tables(temp_db_path):
 async def test_ket_vocabulary_uses_composite_pk(temp_db_path):
     """Spec §2.1: ket_vocabulary PK is (word, context). Verifying via PRAGMA
     because a wrong PK silently breaks INSERT OR IGNORE uniqueness."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     async with repos.vocab._db.execute("PRAGMA table_info(ket_vocabulary)") as cur:
         rows = await cur.fetchall()
     pk_cols = {r[1] for r in rows if r[5] != 0}   # r[5] is pk flag
@@ -83,7 +90,7 @@ async def test_import_csv_splits_multi_topic(temp_db_path):
         f.write(csv_text)
         csv_path = f.name
 
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     topics_for_bank = await repos.vocab.get_topics_for_word("bank")
     assert set(topics_for_bank) == {"Finance", "Geography"}
 
@@ -109,7 +116,7 @@ async def test_import_csv_creates_one_row_per_context(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     async with repos.vocab._db.execute(
         "SELECT context, pos FROM ket_vocabulary WHERE word='design' ORDER BY context"
     ) as cur:
@@ -135,7 +142,7 @@ async def test_import_csv_handles_bom(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     wr = await repos.vocab.get_ket_word("cat")
     assert wr is not None, "BOM must not prevent 'cat' from being read"
 
@@ -153,7 +160,7 @@ async def test_import_csv_links_topic_to_specific_context(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     clever_topics = await repos.vocab.get_topics_for_word("smart", context="clever")
     stylish_topics = await repos.vocab.get_topics_for_word("smart", context="stylish")
     assert "Education" in clever_topics
@@ -162,7 +169,7 @@ async def test_import_csv_links_topic_to_specific_context(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_profile_repo_init_creates_single_row(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     profile = await repos.profile.get()
     assert profile["total_turns"] == 0
     assert profile["in_refill_mode"] == 0
@@ -171,7 +178,7 @@ async def test_profile_repo_init_creates_single_row(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_stats_repo_apply_delta_creates_row(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -186,7 +193,7 @@ async def test_stats_repo_apply_delta_creates_row(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_stats_repo_apply_delta_floor_at_zero(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -204,7 +211,7 @@ async def test_stats_repo_apply_delta_caps_mastery_at_cap(temp_db_path):
     answers to demote a previously-mastered word back into the learning
     pool. Capping at 2 keeps the demotion path short: a single wrong answer
     (2→1) demotes immediately."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -225,7 +232,7 @@ async def test_stats_repo_apply_delta_caps_mastery_at_cap(temp_db_path):
 @pytest.mark.asyncio
 async def test_stats_repo_apply_delta_caps_single_large_delta(temp_db_path):
     """A single delta > CAP (e.g., backfill or test setup) must clamp at CAP=2."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -240,7 +247,7 @@ async def test_status_transitions(temp_db_path):
     """A scaffolding-only word: stays 'exposed' below mastery CAP=2,
     graduates to 'mastered' at 2, demotes to 'learning' immediately on a
     single wrong answer (no absorption buffer with CAP=2)."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -261,7 +268,7 @@ async def test_status_transitions(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_increment_exposed_creates_exposed_row_for_scaffolding(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -275,7 +282,7 @@ async def test_increment_exposed_creates_exposed_row_for_scaffolding(temp_db_pat
 
 @pytest.mark.asyncio
 async def test_increment_exposed_creates_learning_row_for_target(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -290,7 +297,7 @@ async def test_increment_exposed_creates_learning_row_for_target(temp_db_path):
 async def test_increment_exposed_promotes_existing_exposed_to_learning(temp_db_path):
     """When a word previously seen as scaffolding becomes a target, its
     status must promote from 'exposed' to 'learning'."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -306,7 +313,7 @@ async def test_increment_exposed_promotes_existing_exposed_to_learning(temp_db_p
 async def test_increment_exposed_preserves_learning_on_scaffolding_reexposure(temp_db_path):
     """A word that was target once, then appears as scaffolding in a later
     sentence, must stay 'learning' (target history is sticky)."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('cat', '', 'n', 0)"
     )
@@ -319,7 +326,7 @@ async def test_increment_exposed_preserves_learning_on_scaffolding_reexposure(te
 
 @pytest.mark.asyncio
 async def test_last_ai_message_returns_none_when_no_ai_rows(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     assert await repos.log.last_ai_message() is None
 
 
@@ -327,7 +334,7 @@ async def test_last_ai_message_returns_none_when_no_ai_rows(temp_db_path):
 async def test_last_ai_message_returns_latest_when_no_session_start(temp_db_path):
     """Backward compat: databases populated before session_start was added
     must still return the latest AI row when no marker exists."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.log.append("ai", "old sentence", words_used=["old"], turn_id=1)
     await repos.log.append("ai", "newer sentence", words_used=["new"], turn_id=2)
     result = await repos.log.last_ai_message()
@@ -336,48 +343,8 @@ async def test_last_ai_message_returns_latest_when_no_session_start(temp_db_path
 
 
 @pytest.mark.asyncio
-async def test_last_ai_message_ignores_rows_before_session_start(temp_db_path):
-    """Regression: a kid who exits mid-sentence must NOT see that sentence
-    restored on restart. append_session_start marks the boundary; all AI
-    rows before it become invisible to last_ai_message."""
-    repos = await init_db(temp_db_path, csv_path=None)
-    # Prior session left an unfinished sentence.
-    await repos.log.append("ai", "The unfinished sentence.", words_used=["x"], turn_id=1)
-    # REPL restart writes the session_start marker.
-    await repos.log.append_session_start()
-    # No new AI rows yet in this session.
-    assert await repos.log.last_ai_message() is None
-
-
-@pytest.mark.asyncio
-async def test_last_ai_message_returns_only_post_marker_row(temp_db_path):
-    """After session_start, new AI rows are visible; pre-marker ones stay hidden."""
-    repos = await init_db(temp_db_path, csv_path=None)
-    await repos.log.append("ai", "stale from prev session", words_used=["x"], turn_id=1)
-    await repos.log.append_session_start()
-    await repos.log.append("ai", "fresh this session", words_used=["y"], turn_id=2)
-    result = await repos.log.last_ai_message()
-    assert result is not None
-    assert result["content"] == "fresh this session"
-    assert result["words_used"] == ["y"]
-
-
-@pytest.mark.asyncio
-async def test_append_session_start_writes_system_row(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
-    await repos.log.append_session_start()
-    async with repos.log._db.execute(
-        "SELECT role, content FROM conversation_log ORDER BY id DESC LIMIT 1"
-    ) as cur:
-        row = await cur.fetchone()
-    assert row is not None
-    assert row[0] == "system"
-    assert row[1] == "session_start"
-
-
-@pytest.mark.asyncio
 async def test_oldest_learning_word_returns_none_when_empty(temp_db_path):
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     assert await repos.stats.oldest_learning_word() is None
 
 
@@ -385,7 +352,7 @@ async def test_oldest_learning_word_returns_none_when_empty(temp_db_path):
 async def test_oldest_learning_word_prefers_learning_over_exposed(temp_db_path):
     """When both pools exist, learning wins — exposed is only the fallback."""
     from flow.ket_partner.db import WordRef
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('old_exposed', '', 'n', 0)"
     )
@@ -409,7 +376,7 @@ async def test_oldest_learning_word_falls_back_to_exposed_when_no_learning(temp_
     """Pool dry-up case: all learning words graduated, fall back to oldest
     exposed — this is the path that promotes a scaffolding word to target."""
     from flow.ket_partner.db import WordRef
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('first_exposed', '', 'n', 0)"
     )
@@ -431,7 +398,7 @@ async def test_oldest_learning_word_falls_back_to_exposed_when_no_learning(temp_
 async def test_oldest_learning_word_ignores_mastered(temp_db_path):
     """Mastered words must never be returned as practice targets."""
     from flow.ket_partner.db import WordRef
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.vocab._db.execute(
         "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES ('mastered_word', '', 'n', 0)"
     )
@@ -464,7 +431,7 @@ async def test_get_ket_word_returns_wordref_with_context(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     wr = await repos.vocab.get_ket_word("smart", context="clever")
     assert wr == WordRef(word="smart", context="clever")
 
@@ -479,7 +446,7 @@ async def test_get_ket_word_returns_none_when_context_mismatch(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     assert await repos.vocab.get_ket_word("smart", context="") is None
 
 
@@ -499,7 +466,7 @@ async def test_get_ket_word_any_context_prefers_default(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     wr = await repos.vocab.get_ket_word_any_context("design")
     assert wr == WordRef(word="design", context="")
 
@@ -519,7 +486,7 @@ async def test_get_ket_word_any_context_returns_first_when_no_default(temp_db_pa
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     wr = await repos.vocab.get_ket_word_any_context("smart")
     assert wr == WordRef(word="smart", context="clever")
 
@@ -541,7 +508,7 @@ async def test_words_in_topic_without_stats_returns_wordref(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     candidates = await repos.vocab.words_in_topic_without_stats("Animals")
     assert candidates == [WordRef(word="cat", context="")]
 
@@ -556,7 +523,7 @@ async def test_apply_delta_skips_orphan_default_sense(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     # Scaffolding-style call: context="" default.
     result = await repos.stats.apply_delta("smart", delta=1, exposed=True)
     assert result is None
@@ -578,7 +545,7 @@ async def test_apply_delta_writes_default_sense_when_vocab_has_row(temp_db_path)
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     await repos.stats.apply_delta("design", delta=1, exposed=True)
     default = await repos.stats.get("design")
     assert default is not None
@@ -598,7 +565,7 @@ async def test_apply_delta_threads_context_for_target_path(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     await repos.stats.apply_delta("smart", context="clever", delta=1, is_target=True)
     row = await repos.stats.get("smart", context="clever")
     assert row is not None
@@ -616,7 +583,7 @@ async def test_oldest_learning_word_returns_wordref(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    repos = await _init_repos(temp_db_path, csv_path=csv_path)
     await repos.stats.increment_exposed("cat", is_target=True)
     result = await repos.stats.oldest_learning_word()
     assert result == WordRef(word="cat", context="")
@@ -626,7 +593,7 @@ async def test_oldest_learning_word_returns_wordref(temp_db_path):
 async def test_log_append_persists_target_words_with_context(temp_db_path):
     """Spec §5.3: target_words is now List[{'word':..., 'context':...}]
     so the cross-turn rehydration in init_state can recover both fields."""
-    repos = await init_db(temp_db_path, csv_path=None)
+    repos = await _init_repos(temp_db_path, csv_path=None)
     await repos.log.append(
         "ai",
         "The smart kid.",
@@ -635,4 +602,63 @@ async def test_log_append_persists_target_words_with_context(temp_db_path):
         turn_id=1,
     )
     last = await repos.log.last_ai_message()
+    assert last is not None
     assert last["target_words"] == [{"word": "smart", "context": "clever"}]
+
+
+@pytest.mark.asyncio
+async def test_multi_user_isolation(temp_db_path):
+    db = await init_db(temp_db_path, csv_path=None)
+    try:
+        repos_a = Repos.for_user(db, "user_a")
+        repos_b = Repos.for_user(db, "user_b")
+
+        await repos_a.stats.increment_exposed("cat", context="slipping")
+
+        stats_a = await repos_a.stats.get("cat", context="slipping")
+        stats_b = await repos_b.stats.get("cat", context="slipping")
+
+        assert stats_a["exposed_count"] == 1
+        assert stats_b is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_stats_count_and_list_by_category(temp_db_path):
+    db = await init_db(temp_db_path, csv_path=None)
+    try:
+        repos = Repos.for_user(db, "default")
+        await db.execute(
+            "INSERT INTO ket_vocabulary (word, context, pos) VALUES ('cat', '', 'noun')"
+        )
+        await db.commit()
+
+        unused_cnt = await repos.stats.count_by_category("unused")
+        assert unused_cnt >= 1
+
+        unused_list = await repos.stats.list_by_category("unused", offset=0, limit=10)
+        assert len(unused_list) >= 1
+        assert unused_list[0]["word"] == "cat"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_recent_sentences_repo(temp_db_path):
+    db = await init_db(temp_db_path, csv_path=None)
+    try:
+        repos_a = Repos.for_user(db, "user_a")
+        repos_b = Repos.for_user(db, "user_b")
+
+        await repos_a.recent.append("The cat slept on the mat.")
+        recent_a = await repos_a.recent.list_recent(limit=10)
+        recent_b = await repos_b.recent.list_recent(limit=10)
+
+        assert recent_a == ["The cat slept on the mat."]
+        assert recent_b == []
+
+        scaffolding_a = await repos_a.recent.list_recent_scaffolding(window=20)
+        assert scaffolding_a == [["the", "cat", "slept", "on", "the", "mat"]]
+    finally:
+        await db.close()
