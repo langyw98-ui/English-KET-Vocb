@@ -2,7 +2,7 @@ import tempfile
 
 import pytest
 
-from flow.ket_partner.db import init_db
+from flow.ket_partner.db import Repos, init_db
 from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 
 
@@ -19,9 +19,10 @@ async def repos(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    r = await init_db(temp_db_path, csv_path=csv_path)
+    db = await init_db(temp_db_path, csv_path=csv_path)
+    r = Repos.for_user(db, "default")
     yield r
-    await r.close()
+    await db.close()
 
 
 @pytest.mark.asyncio

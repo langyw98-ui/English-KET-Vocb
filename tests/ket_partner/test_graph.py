@@ -5,11 +5,10 @@ import pytest
 from langchain.messages import HumanMessage
 
 from flow.ket_partner.agent import build_agent
-from flow.ket_partner.db import init_db
+from flow.ket_partner.db import Repos, init_db
 from flow.ket_partner.input_classifier import IntentClassification
 from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.translation_evaluator import TranslationEval
-from flow.ket_partner.word_meaning_lookup import WordMeaning
 
 
 @pytest.fixture
@@ -18,13 +17,13 @@ async def setup(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    db = await init_db(temp_db_path, csv_path=csv_path)
+    repos = Repos.for_user(db, "default")
     yield repos
-    await repos.close()
+    await db.close()
 
 
 def _mock_llm_with_responses(responses: dict):
-    # Default naturalness to ok so tests that don't care about it pass through.
     responses.setdefault(NaturalnessResult, NaturalnessResult(ok=True, reason=""))
     llm = MagicMock()
     def structured(schema, **kwargs):
@@ -38,20 +37,28 @@ def _mock_llm_with_responses(responses: dict):
     return llm
 
 
+def _make_config(repos, thread_id="t1"):
+    return {
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": repos._user_id,
+            "repos": repos,
+            "user_info": {"nickname": "test", "age": 8},
+        }
+    }
+
+
 @pytest.mark.asyncio
 async def test_graph_first_turn_generates_sentence(setup):
     repos = setup
     llm = _mock_llm_with_responses({})
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=repos, info={"nickname_kid": "test", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=repos._db)
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "t1"}},
+        config=_make_config(repos, thread_id="t1"),
     )
     ai_msg = result["messages"][-1].content
-    # Require BOTH the translation prompt AND a real sentence body that
-    # contains the target word.
     assert "请把这句译成中文" in ai_msg and "big cat" in ai_msg
-    # R2: explicit non-empty content assertion.
     assert "big cat" in ai_msg.lower()
 
 
@@ -63,17 +70,17 @@ async def test_graph_translation_correct_flow(setup):
         TranslationEval: TranslationEval(correct_translation="那只大猫在这里", wrong_words=[]),
     }
     llm = _mock_llm_with_responses(responses)
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=repos, info={"nickname_kid": "test", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=repos._db)
 
     # Turn 1: first sentence
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "t2"}},
+        config=_make_config(repos, thread_id="t2"),
     )
     # Turn 2: correct translation
-    result = await agent.ainvoke(
+    await agent.ainvoke(
         {"messages": [HumanMessage(content="那只大猫在这里")]},
-        config={"configurable": {"thread_id": "t2"}},
+        config=_make_config(repos, thread_id="t2"),
     )
     cat = await repos.stats.get("cat")
     assert cat["mastery_score"] >= 1

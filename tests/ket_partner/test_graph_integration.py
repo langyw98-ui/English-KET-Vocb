@@ -5,12 +5,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain.messages import AIMessage, HumanMessage
 
-from flow.ket_partner.agent import build_agent
-from flow.ket_partner.db import WordRef, init_db
+from flow.ket_partner.agent import KETPartnerAgent, build_agent
+from flow.ket_partner.config import load_config
+from flow.ket_partner.db import Repos, WordRef, init_db
 from flow.ket_partner.input_classifier import IntentClassification
 from flow.ket_partner.sentence_naturalness import NaturalnessResult
+from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval
 from flow.ket_partner.word_meaning_lookup import SentenceTranslation, WordMeaning
+from langgraph.graph import StateGraph
 
 
 def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translation_resp=None, naturalness_resp=None, sentence_text="The cat is on the bed."):
@@ -40,24 +43,66 @@ def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translati
     return llm
 
 
+@pytest.mark.asyncio
+async def test_stateless_agent_invocation(temp_db_path):
+    csv_text = "word,part_of_speech,topic,context\ncat,n,Animals,\ndog,n,Animals,\nbed,n,Home,\nthe,det,,\non,prep,,\nin,prep,,\nbox,n,,\nis,v,,\n"
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+        f.write(csv_text)
+        csv_path = f.name
+    db = await init_db(temp_db_path, csv_path=csv_path)
+    try:
+        repos = Repos.for_user(db, "test_user")
+        cfg = load_config()
+        llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
+        agent_instance = KETPartnerAgent(llm, llm, cfg)
+        builder = StateGraph(BTPKetState)
+        graph = await agent_instance.compile(builder, checkpointer=None)
+
+        config = {
+            "configurable": {
+                "thread_id": "test_user:main",
+                "user_id": "test_user",
+                "repos": repos,
+                "user_info": {"nickname": "小明", "age": 9},
+            }
+        }
+        res = await graph.ainvoke({"messages": [HumanMessage(content="Hello")]}, config=config)
+        assert "messages" in res
+    finally:
+        await db.close()
+
+
 @pytest.fixture
 async def setup(temp_db_path):
     csv_text = "word,part_of_speech,topic,context\ncat,n,Animals,\ndog,n,Animals,\nbed,n,Home,\nthe,det,,\non,prep,,\nin,prep,,\nbox,n,,\nis,v,,\n"
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    db = await init_db(temp_db_path, csv_path=csv_path)
+    repos = Repos.for_user(db, "default")
     yield repos
-    await repos.close()
+    await db.close()
+
+def _make_config(repos, thread_id="default", user_info=None):
+    if user_info is None:
+        user_info = {"nickname": "t", "age": 8}
+    return {
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": repos._user_id,
+            "repos": repos,
+            "user_info": user_info,
+        }
+    }
 
 
 @pytest.mark.asyncio
 async def test_first_turn_generates_sentence(setup):
     llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "first"}},
+        config=_make_config(setup, "first"),
     )
     ai_msg = result["messages"][-1].content
     # Require both the translation prompt and a real non-empty sentence.
@@ -74,15 +119,15 @@ async def test_correct_translation_increments_mastery(setup):
         eval_resp=TranslationEval(correct_translation="猫在床上", wrong_words=[]),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "correct"}},
+        config=_make_config(setup, "correct"),
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在床上")]},
-        config={"configurable": {"thread_id": "correct"}},
+        config=_make_config(setup, "correct"),
     )
     cat = await setup.stats.get("cat")
     assert cat["mastery_score"] >= 1
@@ -99,14 +144,14 @@ async def test_wrong_translation_deducts(setup):
         ),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "wrong"}},
+        config=_make_config(setup, "wrong"),
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="狗在床上")]},
-        config={"configurable": {"thread_id": "wrong"}},
+        config=_make_config(setup, "wrong"),
     )
     cat = await setup.stats.get("cat")
     assert cat["wrong_count"] >= 1
@@ -119,14 +164,14 @@ async def test_idk_deducts_target_only(setup):
         sentence_translation_resp=SentenceTranslation(translation="猫在床上"),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "idk"}},
+        config=_make_config(setup, "idk"),
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="我不会")]},
-        config={"configurable": {"thread_id": "idk"}},
+        config=_make_config(setup, "idk"),
     )
     # The turn-1 target word is picked via ORDER BY RANDOM() (topic then word),
     # so read the actual target from the log rather than hard-coding `cat`.
@@ -159,14 +204,14 @@ async def test_asks_meaning_deducts_asked_word(setup):
         meaning_resp=WordMeaning(meaning="猫"),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "ask"}},
+        config=_make_config(setup, "ask"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="cat 是什么意思")]},
-        config={"configurable": {"thread_id": "ask"}},
+        config=_make_config(setup, "ask"),
     )
     cat = await setup.stats.get("cat")
     assert cat["wrong_count"] >= 1
@@ -243,12 +288,12 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
         eval_resp=TranslationEval(correct_translation="猫在床上", wrong_words=[]),
         sentence_texts=("The cat is on the bed.", "The dog is on the bed."),
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     # Turn 1: first message, single-element window.
     r1 = await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "win"}},
+        config=_make_config(setup, "win"),
     )
     ai1 = r1["messages"][-1].content
     # C1 regression: sentence must be non-empty AND contain the target word.
@@ -264,7 +309,7 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
     ]
     r2 = await agent.ainvoke(
         {"messages": window},
-        config={"configurable": {"thread_id": "win"}},
+        config=_make_config(setup, "win"),
     )
     ai2 = r2["messages"][-1].content
 
@@ -316,12 +361,12 @@ async def test_asks_meaning_does_not_re_expose_words(setup):
         meaning_resp=WordMeaning(meaning="猫"),
         sentence_texts=("The cat is on the bed.",),
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     # Turn 1: produces a sentence containing [cat, bed] (per validator).
-    r1 = await agent.ainvoke(
+    await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "expose"}},
+        config=_make_config(setup, "expose"),
     )
     cat_after_t1 = await setup.stats.get("cat")
     bed_after_t1 = await setup.stats.get("bed")
@@ -337,7 +382,7 @@ async def test_asks_meaning_does_not_re_expose_words(setup):
     # Turn 2: asks_meaning — no new sentence generated, just explanation.
     await agent.ainvoke(
         {"messages": [HumanMessage(content="cat 是什么意思")]},
-        config={"configurable": {"thread_id": "expose"}},
+        config=_make_config(setup, "expose"),
     )
 
     cat_after_t2 = await setup.stats.get("cat")
@@ -369,18 +414,18 @@ async def test_asks_meaning_non_ket_word_does_not_deduct(setup):
         meaning_resp=WordMeaning(meaning="北京"),
         sentence_texts=("The cat is on the bed.",),
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     # Turn 1: establish a sentence.
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "nonket"}},
+        config=_make_config(setup, "nonket"),
     )
 
     # Turn 2: ask about a non-KET word.
     await agent.ainvoke(
         {"messages": [HumanMessage(content="beijing 是什么意思")]},
-        config={"configurable": {"thread_id": "nonket"}},
+        config=_make_config(setup, "nonket"),
     )
 
     # No stats row should exist for 'beijing' — canonical lookup returned
@@ -398,7 +443,7 @@ async def test_agent_aclose_drains_background_tasks(setup):
     silently dropping them on shutdown.
     """
     llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     # The agent instance must be reachable from the graph (per the I3 fix).
     agent_instance = getattr(graph, "agent", None)
@@ -426,7 +471,7 @@ async def test_agent_aclose_drains_background_tasks(setup):
 async def test_agent_aclose_no_tasks_is_noop(setup):
     """I3: aclose() must be safe to call when there are no background tasks."""
     llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     agent_instance = graph.agent
     # No tasks scheduled — should return quickly without error.
     await agent_instance.aclose()
@@ -453,15 +498,15 @@ async def test_wrong_word_rendered_and_deducted(setup):
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "fw"}},
+        config=_make_config(setup, "fw"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在盒子上")]},
-        config={"configurable": {"thread_id": "fw"}},
+        config=_make_config(setup, "fw"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -497,15 +542,15 @@ async def test_evaluate_node_dedupes_duplicate_wrong_words(setup):
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "dup"}},
+        config=_make_config(setup, "dup"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在盒子上")]},
-        config={"configurable": {"thread_id": "dup"}},
+        config=_make_config(setup, "dup"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -537,15 +582,15 @@ async def test_evaluate_node_drops_words_not_in_sentence(setup):
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "nonket-1"}},
+        config=_make_config(setup, "nonket-1"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在盒子")]},
-        config={"configurable": {"thread_id": "nonket-1"}},
+        config=_make_config(setup, "nonket-1"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -614,15 +659,15 @@ async def test_evaluate_keeps_non_ket_word_in_display_but_skips_stats(setup, mon
         ),
         sentence_text="The dog runs.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "nonket-fb-1"}},
+        config=_make_config(setup, "nonket-fb-1"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="狗在水里跑")]},
-        config={"configurable": {"thread_id": "nonket-fb-1"}},
+        config=_make_config(setup, "nonket-fb-1"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -678,15 +723,15 @@ async def test_evaluate_node_drops_word_with_matching_kid_and_correct_translatio
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "match-1"}},
+        config=_make_config(setup, "match-1"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="猫盒子上")]},
-        config={"configurable": {"thread_id": "match-1"}},
+        config=_make_config(setup, "match-1"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -735,13 +780,13 @@ async def test_overall_correct_false_with_no_wrong_words_keeps_mastery_neutral(s
         ),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     # Turn 1: generate the sentence so each word has a stats row at mastery 0
     # (status 'exposed' or 'learning' depending on whether it's the target).
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "overall-false"}},
+        config=_make_config(setup, "overall-false"),
     )
     cat_after_t1 = await setup.stats.get("cat")
     bed_after_t1 = await setup.stats.get("bed")
@@ -755,7 +800,7 @@ async def test_overall_correct_false_with_no_wrong_words_keeps_mastery_neutral(s
     # evaluator returns wrong=[] + overall_correct=False.
     await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在床上玩球")]},
-        config={"configurable": {"thread_id": "overall-false"}},
+        config=_make_config(setup, "overall-false"),
     )
 
     # Both words must stay at the SAME mastery_score — no +1 reward for a
@@ -791,15 +836,15 @@ async def test_overall_correct_false_with_no_wrong_words_renders_deviation_messa
         ),
         sentence_text="We can go out to play in the park.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "ui-deviation"}},
+        config=_make_config(setup, "ui-deviation"),
     )
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="我们可以到外面去公园玩球")]},
-        config={"configurable": {"thread_id": "ui-deviation"}},
+        config=_make_config(setup, "ui-deviation"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -835,11 +880,11 @@ async def test_overall_correct_true_with_no_wrong_words_rewards_normally(setup):
         ),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "overall-true"}},
+        config=_make_config(setup, "overall-true"),
     )
     cat_after_t1 = await setup.stats.get("cat")
     assert cat_after_t1 is not None
@@ -847,7 +892,7 @@ async def test_overall_correct_true_with_no_wrong_words_rewards_normally(setup):
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="猫在床上")]},
-        config={"configurable": {"thread_id": "overall-true"}},
+        config=_make_config(setup, "overall-true"),
     )
     cat_after_t2 = await setup.stats.get("cat")
     assert cat_after_t2["mastery_score"] == cat_mastery_t1 + 1, (
@@ -890,7 +935,7 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     # Force a small retry limit so the test doesn't loop forever.
     original_limit = graph.agent.config.validate_retry_limit
@@ -898,7 +943,7 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "stale"}},
+        config=_make_config(setup, "stale"),
     )
     graph.agent.config.validate_retry_limit = original_limit
 
@@ -930,12 +975,12 @@ async def test_generate_node_regens_when_more_than_one_non_ket(setup, monkeypatc
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "regen"}},
+        config=_make_config(setup, "regen"),
     )
     # >1 non-KET must keep regenerating until retries exhaust.
     assert call_log["generate"] >= 3, (
@@ -968,15 +1013,15 @@ async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     # Seed recent_sentences with the duplicate so the first draft collides.
-    graph.agent._recent_sentences.append("The cat likes to dance.")
+    await setup.recent.append("The cat likes to dance.")
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "dedup"}},
+        config=_make_config(setup, "dedup"),
     )
     ai_msg = result["messages"][-1].content
     # The kid must see the fresh sentence, not the duplicate.
@@ -1018,12 +1063,12 @@ async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "non-ket-avoid"}},
+        config=_make_config(setup, "non-ket-avoid"),
     )
 
     # Initial call has no prior non-KET words to avoid.
@@ -1064,15 +1109,16 @@ async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypat
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     # Seed recent_sentences with the duplicate so the first draft collides.
-    graph.agent._recent_sentences.append(duplicate)
+    await setup.recent.append(duplicate)
+
 
     await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "dup-kwarg"}},
+        config=_make_config(setup, "dup-kwarg"),
     )
 
     # Initial call has no prior attempts (validation hasn't run yet).
@@ -1129,7 +1175,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     # Override the target via the select_target_word node — easiest path is to
@@ -1140,7 +1186,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "target-split"}},
+        config=_make_config(setup, "target-split"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -1207,12 +1253,12 @@ async def test_generate_node_accepts_placeholder_target_with_substitution(setup,
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 3
 
-    result = await graph.ainvoke(
+    await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "placeholder-target"}},
+        config=_make_config(setup, "placeholder-target"),
     )
 
     # generate_sentence must be called exactly once — no target_split retry.
@@ -1247,17 +1293,18 @@ async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypa
     monkeypatch.setattr(agent_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 1
     graph.agent.config.variety.recent_window = 3
 
-    # Seed three prior sentences' worth of words.
-    graph.agent._recent_scaffolding = [["the", "cat", "runs"], ["the", "dog", "jumps"], ["a", "fish", "swims"]]
-    graph.agent._recent_sentences = ["The cat runs.", "The dog jumps.", "A fish swims."]
+    # Seed three prior sentences' worth of words via RecentSentencesRepo.
+    await setup.recent.append("The cat runs.")
+    await setup.recent.append("The dog jumps.")
+    await setup.recent.append("A fish swims.")
 
     await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "window"}},
+        config=_make_config(setup, "window"),
     )
     # All 9 words from the 3 prior sentences must reach the prompt.
     assert set(captured_args["recent_scaffolding"]) == {"the", "cat", "runs", "dog", "jumps", "a", "fish", "swims"}, (
@@ -1305,11 +1352,11 @@ async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "ann-1"}},
+        config=_make_config(setup, "ann-1"),
     )
     ai_msg = result["messages"][-1].content
     # Kid sees the original sentence (with the non-KET word).
@@ -1345,12 +1392,12 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
     monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "ann-many"}},
+        config=_make_config(setup, "ann-many"),
     )
     ai_msg = result["messages"][-1].content
     # Both non-KET words must be annotated.
@@ -1387,11 +1434,11 @@ async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "ann-none"}},
+        config=_make_config(setup, "ann-none"),
     )
     ai_msg = result["messages"][-1].content
     assert "的意思是" not in ai_msg, "no annotation lines for all-KET sentence"
@@ -1409,10 +1456,10 @@ async def test_restart_does_not_leak_prior_session_unfinished_sentence(setup):
     """
     # Session 1: simulate one full turn — kid says "hi", AI emits a sentence.
     llm1 = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    agent1 = await build_agent(llm_flash=llm1, llm_smart=llm1, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent1 = await build_agent(llm_flash=llm1, llm_smart=llm1, db=setup._db)
     await agent1.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "s1"}},
+        config=_make_config(setup, "s1"),
     )
     # Confirm session 1 left an AI row that COULD be restored.
     prior = await setup.log.last_ai_message()
@@ -1432,10 +1479,10 @@ async def test_restart_does_not_leak_prior_session_unfinished_sentence(setup):
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         sentence_text="The dog is on the bed.",
     )
-    agent2 = await build_agent(llm_flash=llm2, llm_smart=llm2, repos=setup, info={"nickname_kid": "t", "age": 8})
+    agent2 = await build_agent(llm_flash=llm2, llm_smart=llm2, db=setup._db)
     result = await agent2.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "s2"}},
+        config=_make_config(setup, "s2"),
     )
     ai_msg = result["messages"][-1].content
     # The session-2 sentence must be the freshly generated one (dog), and
@@ -1488,12 +1535,12 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 3
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "nat"}},
+        config=_make_config(setup, "nat"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -1547,12 +1594,12 @@ async def test_naturalness_check_skipped_when_ket_validation_fails(setup, monkey
     monkeypatch.setattr(agent_module, "check_naturalness", fake_naturalness)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "skip-nat"}},
+        config=_make_config(setup, "skip-nat"),
     )
     assert naturalness_calls["count"] == 0, (
         "check_naturalness must NOT be called when KET validation fails (cost gate)"
@@ -1585,12 +1632,11 @@ async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monke
     agent = await build_agent(
         llm_flash=llm,
         llm_smart=llm,
-        repos=setup,
-        info={"nickname_kid": "t", "age": 8},
+        db=setup._db,
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "target-mark"}},
+        config=_make_config(setup, "target-mark"),
     )
 
     # 'cat' is the target_word (forced by the monkeypatch above).
@@ -1635,7 +1681,8 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    repos = await init_db(temp_db_path, csv_path=csv_path)
+    db = await init_db(temp_db_path, csv_path=csv_path)
+    repos = Repos.for_user(db, "default")
 
     sentence = "She listens to music on her new MP3 player."
 
@@ -1656,12 +1703,11 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
     agent = await build_agent(
         llm_flash=llm,
         llm_smart=llm,
-        repos=repos,
-        info={"nickname_kid": "t", "age": 8},
+        db=repos._db,
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "mp3-target"}},
+        config=_make_config(repos, "mp3-target"),
     )
 
     # The target phrase must be tracked as 'learning' — without the fix the
@@ -1785,12 +1831,12 @@ async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "overflow-fallback"}},
+        config=_make_config(setup, "overflow-fallback"),
     )
     ai_msg = result["messages"][-1].content
     # The kid must see the LEAST-BAD sentence (count=2, "alpha bravo cat bed."),
@@ -1857,12 +1903,12 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "word-switch"}},
+        config=_make_config(setup, "word-switch"),
     )
     ai_msg = result["messages"][-1].content
 
@@ -1942,12 +1988,12 @@ async def test_word_switch_only_once(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm, repos=setup, info={"nickname_kid": "t", "age": 8})
+    graph = await build_agent(llm_flash=llm, llm_smart=llm, db=setup._db)
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
-        config={"configurable": {"thread_id": "switch-once"}},
+        config=_make_config(setup, "switch-once"),
     )
     ai_msg = result["messages"][-1].content
 

@@ -1,6 +1,3 @@
-import sqlite3
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import pytest
 

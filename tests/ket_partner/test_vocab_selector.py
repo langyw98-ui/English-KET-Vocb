@@ -1,8 +1,8 @@
 import pytest
 
 from flow.ket_partner.config import load_config
-from flow.ket_partner.db import init_db, WordRef
-from flow.ket_partner.vocab_selector import select_target_word, rotate_topic
+from flow.ket_partner.db import Repos, WordRef, init_db
+from flow.ket_partner.vocab_selector import rotate_topic, select_target_word
 
 
 @pytest.fixture
@@ -18,9 +18,10 @@ async def repos(temp_db_path):
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
         f.write(csv_text)
         csv_path = f.name
-    r = await init_db(temp_db_path, csv_path=csv_path)
+    db = await init_db(temp_db_path, csv_path=csv_path)
+    r = Repos.for_user(db, "default")
     yield r
-    await r.close()
+    await db.close()
 
 
 @pytest.mark.asyncio

@@ -2,47 +2,42 @@ import asyncio
 from typing import Optional
 
 from langchain.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from flow.agent import memory
-from flow.common import logger, llm_flash, llm_max
+from flow.common import llm_flash, llm_max, logger
 from flow.ket_partner.config import load_config
 from flow.ket_partner.db import Repos, init_db
 from flow.ket_partner.graph import route_after_init, route_by_intent
-from flow.ket_partner.input_classifier import IntentClassification, classify_intent
+from flow.ket_partner.input_classifier import classify_intent
+from flow.ket_partner.multi_word_target import target_in_sentence
 from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
 from flow.ket_partner.profile_summarizer import run_profile_summary
 from flow.ket_partner.sentence_generator import generate_sentence
 from flow.ket_partner.sentence_naturalness import check_naturalness
-from flow.ket_partner.multi_word_target import target_in_sentence
 from flow.ket_partner.sentence_validator import _tokenize, validate_sentence
 from flow.ket_partner.state import BTPKetState
-from flow.ket_partner.translation_evaluator import TranslationEval, evaluate_translation
+from flow.ket_partner.translation_evaluator import evaluate_translation
 from flow.ket_partner.vocab_selector import select_target_word
-from flow.ket_partner.word_meaning_lookup import WordMeaning, lookup_sentence_translation, lookup_word_meaning, lookup_word_meanings
+from flow.ket_partner.word_meaning_lookup import (
+    lookup_sentence_translation,
+    lookup_word_meaning,
+    lookup_word_meanings,
+)
 
 
 class KETPartnerAgent:
-    def __init__(self, llm_flash, llm_smart, repos: Repos, info: dict, config):
+    def __init__(self, llm_flash, llm_smart, config):
         self.llm_flash = llm_flash
         self.llm_smart = llm_smart
-        self.repos = repos
-        self.info = info
         self.config = config
         self._bg_tasks = set()
-        # Per-sentence word lists — list[list[str]] so [-recent_window:]
-        # gives the last N SENTENCES (flattened for the prompt), not just
-        # the last N words of one sentence (the previous bug).
-        self._recent_scaffolding: list = []
-        # Full sentence strings for hard dedup — passed to the LLM prompt
-        # AND checked post-generation to force a regen if the LLM ignores
-        # the soft constraint.
-        self._recent_sentences: list = []
 
-    async def init_state(self, state: BTPKetState) -> dict:
-        profile = await self.repos.profile.get()
-        await self.repos.profile.update(in_refill_mode=0)
+    async def init_state(self, state: BTPKetState, config: RunnableConfig) -> dict:
+        repos: Repos = config["configurable"]["repos"]
+        profile = await repos.profile.get()
+        await repos.profile.update(in_refill_mode=0)
         update = {
             "topic": profile["current_topic"],
             "profile_strategy": profile["dialogue_strategy"],
@@ -50,18 +45,12 @@ class KETPartnerAgent:
             "last_english_sentence": None,
             "last_target_word": None,
             "last_sentence_words": [],
-            # Reset each turn — generate_sentence_node sets this True.
             "_exposure_recorded": False,
         }
-        # The DB is the single source of truth (spec §11.1). Always re-hydrate
-        # from the last AI log row regardless of how many messages were passed
-        # in. The previous `len(state["messages"]) <= 1` guard broke under
-        # main.py's `messages[-5:]` windowing: on turn 2 the caller passes
-        # [Human1, AI1, Human2] (length 3), the guard failed, and the three
-        # keys stayed None/[] — causing route_after_init to re-select a target
-        # word (infinite first-turn loop) and evaluate_translation to run
-        # against an empty sentence (mastery never incremented).
-        last_ai = await self.repos.log.last_ai_message()
+        if len(state.get("messages", [])) > 10:
+            update["messages"] = state["messages"][-10:]
+
+        last_ai = await repos.log.last_ai_message()
         if last_ai:
             update["last_english_sentence"] = last_ai["content"]
             update["last_sentence_words"] = last_ai["words_used"]
@@ -75,12 +64,13 @@ class KETPartnerAgent:
             update["last_target_context"] = None
         return update
 
-    async def classify_intent_node(self, state: BTPKetState) -> dict:
+    async def classify_intent_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         kid_input = state["messages"][-1].content if state["messages"] else ""
         result = await classify_intent(self.llm_smart, state.get("last_english_sentence"), kid_input)
         return {"intent": result.intent, "asked_word": result.asked_word}
 
-    async def evaluate_translation_node(self, state: BTPKetState) -> dict:
+    async def evaluate_translation_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
+        repos: Repos = config["configurable"]["repos"]
         kid_input = state["messages"][-1].content
         result = await evaluate_translation(
             self.llm_smart,
@@ -91,28 +81,6 @@ class KETPartnerAgent:
             kid_input=kid_input,
         )
         logger.debug(f"evaluate_translation_node: {result}")
-        # Filter rules (in order):
-        # 1. Drop entries whose kid_translation EXACTLY matches their
-        #    correct_translation (both non-empty) — kid got it right, the
-        #    evaluator prompt's rule 3 forbids this but the LLM occasionally
-        #    contaminates correct neighbors when the overall translation is
-        #    mostly wrong.
-        # 2. Drop entries with empty correct_translation — usually function
-        #    words (be/will/do/to) that fold into sentence structure with no
-        #    single Chinese equivalent. Without this filter format_output
-        #    renders an empty "be 的意思是：".
-        # 3. Canonicalize via get_ket_word_any_context so case variants
-        #    ("Eat" → "eat") match the canonical form in last_sentence_words.
-        # 4. KEEP entries that are in the displayed sentence — covers KET
-        #    words (in last_sentence_words) AND non-KET words / tolerated
-        #    proper nouns (in the raw sentence's token set). Drop everything
-        #    else (LLM hallucinations of words not in the sentence).
-        #
-        # Non-KET words are kept for DISPLAY so the kid gets correction
-        # feedback ("splashes 的意思是：溅水"). Stats are decoupled:
-        # apply_mastery_updates iterates last_sentence_words (KET subset)
-        # only, so non-KET entries in wrong_words never trigger apply_delta
-        # — no phantom stats rows.
         last_words_set = set(state.get("last_sentence_words") or [])
         last_sentence = state.get("last_english_sentence") or ""
         displayed_tokens = {
@@ -137,15 +105,10 @@ class KETPartnerAgent:
                     f"empty correct_translation (likely a function word with no single Chinese equivalent)"
                 )
                 continue
-            # Canonicalize KET words to the form tracked in last_sentence_words.
             if entry.word not in last_words_set:
-                wr = await self.repos.vocab.get_ket_word_any_context(entry.word)
+                wr = await repos.vocab.get_ket_word_any_context(entry.word)
                 if wr and wr.word in last_words_set:
                     entry = entry.model_copy(update={"word": wr.word})
-            # Keep if the (possibly canonicalized) entry is in the displayed
-            # sentence — KET words match last_words_set; non-KET words match
-            # the raw token set. Drops LLM hallucinations of words not in
-            # the sentence at all.
             if entry.word in last_words_set or entry.word.lower() in displayed_tokens:
                 key = entry.word
             else:
@@ -165,83 +128,61 @@ class KETPartnerAgent:
             "overall_correct": result.overall_correct,
         }
 
-    async def lookup_target_meaning_node(self, state: BTPKetState) -> dict:
+    async def lookup_target_meaning_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         result = await lookup_sentence_translation(
             self.llm_flash, state["last_english_sentence"]
         )
         return {"sentence_translation": result.translation}
 
-    async def lookup_asked_meaning_node(self, state: BTPKetState) -> dict:
+    async def lookup_asked_meaning_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         result = await lookup_word_meaning(
             self.llm_flash, state["last_english_sentence"], state["asked_word"]
         )
         return {"asked_word_meaning": result.meaning}
 
-    async def update_mastery_node(self, state: BTPKetState) -> dict:
-        await apply_mastery_updates(state, self.repos)
+    async def update_mastery_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
+        repos: Repos = config["configurable"]["repos"]
+        await apply_mastery_updates(state, repos)
         return {}
 
-    async def select_target_word_node(self, state: BTPKetState) -> dict:
-        profile = await self.repos.profile.get()
-        word_ref = await select_target_word(self.repos, profile, self.config)
+    async def select_target_word_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
+        repos: Repos = config["configurable"]["repos"]
+        profile = await repos.profile.get()
+        word_ref = await select_target_word(repos, profile, self.config)
         if word_ref is None:
             return {"target_word": None, "target_context": None}
         return {"target_word": word_ref.word, "target_context": word_ref.context}
 
-    async def generate_sentence_node(self, state: BTPKetState) -> dict:
-        age = self.info.get("age", 8)
+    async def generate_sentence_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
+        repos: Repos = config["configurable"]["repos"]
+        user_info: dict = config["configurable"].get("user_info", {})
+        age = user_info.get("age", 8)
         window = self.config.variety.recent_window
-        # Flatten last N sentences' worth of words (was previously a flat
-        # list sliced to its tail — only got the last 3 WORDS, not last 3
-        # sentences). Now: list[list[str]] outer, flattened here.
-        avoid_words = [w for sent_words in self._recent_scaffolding[-window:] for w in sent_words]
-        avoid_sentences = list(self._recent_sentences[-window:])
-        profile = await self.repos.profile.get()
+        avoid_words = [w for sent_words in (await repos.recent.list_recent_scaffolding(window=window)) for w in sent_words]
+        avoid_sentences = await repos.recent.list_recent(limit=window)
+        profile = await repos.profile.get()
 
         target = state["target_word"]
         target_ctx = state.get("target_context") or ""
 
         sentence, result, final_target, final_ctx = await self._generate_with_fallback(
-            state["target_word"], target_ctx, avoid_words, avoid_sentences, age, profile
+            state["target_word"], target_ctx, avoid_words, avoid_sentences, age, profile, repos
         )
         target, target_ctx = final_target, final_ctx
 
-        self._recent_sentences.append(sentence)
-        # Multi-word / non-alpha target patch. The validator tokenizes with
-        # [A-Za-z']+, so targets like "MP3 player", "T-shirt", "ice cream" get
-        # split (or partially dropped — "MP3" → "MP" silently skipped as a
-        # proper noun). Force-include the target when it actually appears in
-        # the sentence so stats tracking marks it 'learning' and downstream
-        # filters (which use last_sentence_words) recognize the same lexical
-        # unit the kid was asked about. (Note: the retry loop's target_split
-        # check above guarantees the contiguous presence for multi-word
-        # targets by the time we reach here; single-word targets always
-        # pass the substring test trivially.)
+        await repos.recent.append(sentence, window=window)
+
         if (
             target
             and target not in result.words_used
             and target_in_sentence(target, sentence)
         ):
             result.words_used.append(target)
-            # The validator also tracked the target's trailing constituent as
-            # a standalone scaffolding word (e.g. "player" from "MP3 player").
-            # Drop it — in that sentence the word is part of the target
-            # phrase, not an independent lexical unit. Simple whitespace-split
-            # covers space-separated phrases ("MP3 player", "ice cream").
-            # Hyphenated / period targets ("T-shirt", "a.m.") still leak their
-            # alphabetic tail; rare in KET vocab, accepted as a known limit.
             constituents = {c.lower() for c in target.split()}
             result.words_used = [
                 w for w in result.words_used
                 if w == target or w.lower() not in constituents
             ]
-            # Also strip constituents from non_ket_words. When the target is
-            # a multi-word KET entry like "lie down", the validator tokenizes
-            # it into ["lie", "down"]. "down" matches a KET entry, but "lie"
-            # might not (lie-alone isn't in KET vocab) — so "lie" lands in
-            # non_ket_words and gets separately annotated, even though in
-            # THIS sentence it's part of the target phrase. Same whitespace-
-            # split limitation as above (hyphenated targets still leak).
             result.non_ket_words = [
                 w for w in result.non_ket_words
                 if w.lower() not in constituents
@@ -251,29 +192,9 @@ class KETPartnerAgent:
                 f"final words_used={result.words_used}, "
                 f"non_ket_words={result.non_ket_words}"
             )
-        # Append to _recent_scaffolding AFTER the patch — otherwise the
-        # in-place mutation + reassignment leaves the outer list pointing at
-        # an intermediate state that contains BOTH "player" AND "MP3 player",
-        # which then leaks into the next turn's avoid_words list.
-        self._recent_scaffolding.append(result.words_used)
-        # Per spec §11.9, exposed_count is incremented once per word in the
-        # NEW sentence. Do this here (on the generate path) so non-generate
-        # turns do not re-count the prior sentence's words. Set the flag so
-        # persist_turn_node knows the increment is already done and skips its
-        # own increment.
-        # Mark the target distinctly: its first exposure makes it 'learning'
-        # (active practice target); scaffolding words stay 'exposed' until
-        # they're selected as target in a future turn. Without this flag, all
-        # words would pool into 'exposed' and refill_mode / oldest_learning_word
-        # would treat passive scaffolding as if it were target practice.
-        # Spec §11.9 + §4.3: target uses real context, scaffolding uses "".
-        # increment_exposed internally applies the §4.4 orphan guard, so
-        # scaffolding words without a (word, '') vocab row silently skip.
         for w in result.words_used:
             ctx = target_ctx if w == target else ""
-            await self.repos.stats.increment_exposed(w, context=ctx, is_target=(w == target))
-        # If the accepted sentence still has non-KET words, look up their
-        # context meanings so format_output_node can annotate them for the kid.
+            await repos.stats.increment_exposed(w, context=ctx, is_target=(w == target))
         annotations: list[dict[str, str]] = []
         if result.non_ket_words:
             annotations = await lookup_word_meanings(
@@ -285,30 +206,16 @@ class KETPartnerAgent:
             "_exposure_recorded": True,
             "non_ket_annotations": annotations,
         }
-        # If the fallback switched the target word, propagate new target AND
-        # its context so persist_turn_node logs the right target_words and
-        # downstream nodes see what was actually practiced.
         if target != state["target_word"] or target_ctx != (state.get("target_context") or ""):
             update["target_word"] = target
             update["target_context"] = target_ctx
         return update
 
-    async def _validate_and_categorize(self, sentence: str, target: str, age: int) -> dict:
-        """Validate a sentence and categorize its failure (if any).
-
-        Centralizes the validate + classify logic that the retry loop uses on
-        every attempt. Returns a dict with:
-        - result: ValidationResult from validate_sentence
-        - passed: True if the sentence passes all gates (KET + dedup + target
-          contiguity + naturalness)
-        - reason_kind: None if passed, else one of "naturalness",
-          "non_ket_overflow", "duplicate", "target_split"
-        - reason_detail: human-readable explanation (empty if passed)
-        - non_ket_words / non_ket_count: from the ValidationResult
-        - is_duplicate / is_target_split: the structural gate flags
-        """
-        result = await validate_sentence(sentence, self.repos, target=target)
-        is_duplicate = sentence in self._recent_sentences
+    async def _validate_and_categorize(
+        self, sentence: str, target: str, age: int, repos: Repos, avoid_sentences: list
+    ) -> dict:
+        result = await validate_sentence(sentence, repos, target=target)
+        is_duplicate = sentence in avoid_sentences
         non_ket_count = len(result.non_ket_words)
         is_target_split = (
             bool(target)
@@ -322,9 +229,6 @@ class KETPartnerAgent:
 
         if non_ket_count <= 1 and not is_duplicate and not is_target_split:
             if non_ket_count == 0:
-                # Only run the expensive naturalness LLM check on sentences
-                # that fully passed the cheap KET gate — otherwise we'd
-                # burn budget judging sentences we'll regen anyway.
                 naturalness = await check_naturalness(self.llm_smart, sentence, age=age)
                 logger.debug(
                     f"validate_sentence: {result} duplicate={is_duplicate} "
@@ -336,8 +240,6 @@ class KETPartnerAgent:
                     reason_kind = "naturalness"
                     reason_detail = f"unnatural expression — {naturalness.reason}"
             else:
-                # non_ket_count == 1: accept as-is, skip naturalness (no point
-                # judging a sentence the policy already chose to annotate).
                 logger.debug(f"{result} accept: 1 non-KET word will annotate")
                 passed = True
         else:
@@ -374,25 +276,8 @@ class KETPartnerAgent:
         avoid_sentences: list,
         age: int,
         profile: dict,
+        repos: Repos,
     ):
-        """Generate a sentence with retry + smart fallback.
-
-        Returns (sentence, validation_result, final_target, final_context).
-        `final_target` / `final_context` differ from the initial values when
-        a word switch occurred.
-
-        Retry policy (per user spec):
-        - Each attempt is validated; on failure the (sentence, reason) is
-          appended to `attempts` and fed back to the next regen's prompt
-          via prior_attempts — the LLM sees ALL prior failures.
-        - After retries exhaust:
-          * If any attempt had non_ket_overflow, pick the one with FEWEST
-            non-KET words (tie → latest) and accept it.
-          * Elif ALL attempts were naturalness fails AND we haven't yet
-            switched the target word, call select_target_word again and
-            run a full retry cycle with the new word. Bounded to ONE switch.
-          * Otherwise accept the final draft.
-        """
         target = initial_target
         context = initial_context
         word_switched = False
@@ -419,7 +304,7 @@ class KETPartnerAgent:
             result = None
 
             for _ in range(self.config.validate_retry_limit):
-                check = await self._validate_and_categorize(sentence, target, age)
+                check = await self._validate_and_categorize(sentence, target, age, repos, avoid_sentences)
                 result = check["result"]
                 if check["passed"]:
                     return sentence, result, target, context
@@ -435,7 +320,7 @@ class KETPartnerAgent:
                         seen_non_ket_words.append(w)
                 sentence = await _regen()
 
-            check = await self._validate_and_categorize(sentence, target, age)
+            check = await self._validate_and_categorize(sentence, target, age, repos, avoid_sentences)
             result = check["result"]
             if check["passed"]:
                 return sentence, result, target, context
@@ -455,7 +340,7 @@ class KETPartnerAgent:
             if overflow_attempts:
                 best = min(reversed(overflow_attempts), key=lambda a: a["non_ket_count"])
                 sentence = best["sentence"]
-                result = await validate_sentence(sentence, self.repos, target=target)
+                result = await validate_sentence(sentence, repos, target=target)
                 logger.warning(
                     f"sentence validation: accepting non-KET overflow draft after "
                     f"{len(attempts)} attempts (non_ket_count={len(result.non_ket_words)}); "
@@ -467,7 +352,7 @@ class KETPartnerAgent:
                     f"all {len(attempts)} attempts failed on naturalness; "
                     f"switching target word from '{target}'"
                 )
-                new_ref = await select_target_word(self.repos, profile, self.config)
+                new_ref = await select_target_word(repos, profile, self.config)
                 if new_ref is None or new_ref.word == target:
                     logger.warning(
                         f"could not find a different target word; "
@@ -495,57 +380,43 @@ class KETPartnerAgent:
                 )
                 return sentence, result, target, context
 
-    async def format_output_node(self, state: BTPKetState) -> dict:
-        # Read the sentence from last_english_sentence (set by
-        # generate_sentence_node). For non-generate branches the value is
-        # whatever was re-hydrated by init_state from the DB log.
+    async def format_output_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         sentence = state.get("last_english_sentence") or ""
         text = format_output_text(state, sentence)
-        # SPREAD existing messages into the return so the REPLACE reducer on
-        # `messages` (no reducer annotation in BTPKetState) preserves the
-        # caller's HumanMessage(s). Otherwise persist_turn_node only sees the
-        # single AIMessage and messages[-2] is out of range — the user input
-        # for this turn is then never written to conversation_log.
         return {
             "messages": [*state["messages"], AIMessage(content=text)],
         }
 
-    async def explain_meaning_node(self, state: BTPKetState) -> dict:
+    async def explain_meaning_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         asked = state["asked_word"]
         last = state.get("last_english_sentence") or ""
         meaning = state.get("asked_word_meaning", "")
         text = f'"{asked}" 的意思是「{meaning}」。\n让我们继续吧，{last}。'
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
-    async def redirect_to_translate_node(self, state: BTPKetState) -> dict:
+    async def redirect_to_translate_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         last = state.get("last_english_sentence") or ""
         text = f"我们继续翻译练习吧。\n上一句:{last}"
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
-    async def compliance_redirect_node(self, state: BTPKetState) -> dict:
+    async def compliance_redirect_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
         last = state.get("last_english_sentence") or ""
         text = f"我们换个健康的话题继续练习吧。\n上一句:{last}"
         return {"messages": [*state["messages"], AIMessage(content=text)]}
 
-    async def persist_turn_node(self, state: BTPKetState) -> dict:
+    async def persist_turn_node(self, state: BTPKetState, config: RunnableConfig) -> dict:
+        repos: Repos = config["configurable"]["repos"]
         user_msg = state["messages"][-2] if len(state["messages"]) >= 2 else None
         ai_msg = state["messages"][-1] if state["messages"] else None
-        profile = await self.repos.profile.get()
+        profile = await repos.profile.get()
         turn_id = profile["total_turns"] + 1
 
         if user_msg and isinstance(user_msg, HumanMessage):
-            await self.repos.log.append("user", user_msg.content, words_used=[], turn_id=turn_id)
+            await repos.log.append("user", user_msg.content, words_used=[], turn_id=turn_id)
         if ai_msg and isinstance(ai_msg, AIMessage):
-            # Only the generate path produces a sentence whose words count as
-            # "actual_words_used" (spec §11.9). When _exposure_recorded is True,
-            # generate_sentence_node has ALREADY incremented exposed_count and
-            # we log the words on the AI row. For all other branches
-            # (asks_meaning / idk / off_topic / non_compliant / redirect) the
-            # AI message is not a fresh sentence, so words_used=[] and no
-            # increment happens here.
             exposure_recorded = bool(state.get("_exposure_recorded"))
             words_for_log = state.get("last_sentence_words") or [] if exposure_recorded else []
-            await self.repos.log.append(
+            await repos.log.append(
                 "ai",
                 ai_msg.content,
                 words_used=words_for_log,
@@ -555,31 +426,22 @@ class KETPartnerAgent:
                 }] if state.get("target_word") else [],
                 turn_id=turn_id,
             )
-            # Increment has already happened in generate_sentence_node; do
-            # NOT re-increment here.
 
-        await self.repos.profile.update(total_turns=turn_id)
+        await repos.profile.update(total_turns=turn_id)
 
         if turn_id % self.config.summary.interval_turns == 0:
-            task = asyncio.create_task(self._run_summary_safe())
+            task = asyncio.create_task(self._run_summary_safe(repos))
             self._bg_tasks.add(task)
             task.add_done_callback(self._bg_tasks.discard)
         return {}
 
-    async def _run_summary_safe(self) -> None:
+    async def _run_summary_safe(self, repos: Repos) -> None:
         try:
-            await run_profile_summary(self.llm_smart, self.repos)
+            await run_profile_summary(self.llm_smart, repos)
         except Exception as e:
             logger.warning(f"background summary failed: {e}")
 
     async def aclose(self, timeout: float = 2.0) -> None:
-        """Drain in-flight background summary tasks.
-
-        Without this, a summary task scheduled on the turn that triggers
-        /exit would be silently dropped when the event loop closes. We give
-        it a small window (default 2s) and swallow exceptions (the summary
-        is best-effort by design — see _run_summary_safe).
-        """
         if not self._bg_tasks:
             return
         try:
@@ -594,7 +456,7 @@ class KETPartnerAgent:
             for t in self._bg_tasks:
                 t.cancel()
 
-    async def compile(self, builder: StateGraph, checkpointer) -> CompiledStateGraph:
+    async def compile(self, builder: StateGraph, checkpointer=None) -> CompiledStateGraph:
         builder.add_node("init_state", self.init_state)
         builder.add_node("classify_intent", self.classify_intent_node)
         builder.add_node("evaluate_translation", self.evaluate_translation_node)
@@ -616,7 +478,6 @@ class KETPartnerAgent:
         })
         builder.add_edge("init_state", "classify_intent_or_skip")
 
-        # First-turn shortcut
         builder.add_node("classify_intent_or_skip", self._route_after_init_state)
         builder.add_conditional_edges("classify_intent_or_skip", lambda s: route_after_init(s), {
             "classify_intent": "classify_intent",
@@ -654,10 +515,10 @@ class KETPartnerAgent:
 
         return builder.compile(checkpointer=checkpointer)
 
-    async def _route_after_init_state(self, state: BTPKetState) -> dict:
+    async def _route_after_init_state(self, state: BTPKetState, config: RunnableConfig) -> dict:
         return {}
 
-    async def _passthrough(self, state: BTPKetState) -> dict:
+    async def _passthrough(self, state: BTPKetState, config: RunnableConfig) -> dict:
         return {}
 
     def _route_call2(self, state: BTPKetState) -> str:
@@ -671,38 +532,22 @@ class KETPartnerAgent:
         return "skip"
 
 
-async def build_agent(llm_flash, llm_smart, repos: Repos, info: dict) -> CompiledStateGraph:
-    """Build the compiled graph.
-
-    The underlying KETPartnerAgent is attached to the returned graph object
-    as `.agent` so callers (e.g. main.py) can drain background tasks on
-    shutdown via `await graph.agent.aclose()`. Attaching it as an attribute
-    avoids changing the function's return signature, which would break the
-    10+ test callsites that do `agent = await build_agent(...)` then
-    `agent.ainvoke(...)`.
-    """
+async def build_agent(llm_flash, llm_smart, db, checkpointer=None) -> CompiledStateGraph:
     cfg = load_config()
-    agent = KETPartnerAgent(llm_flash, llm_smart, repos, info, cfg)
+    agent = KETPartnerAgent(llm_flash, llm_smart, cfg)
     builder = StateGraph(BTPKetState)
-    graph = await agent.compile(builder, checkpointer=memory)
-    # Attach the agent instance so main.py's finally block can drain
-    # background tasks. (CompiledStateGraph is a Runnable; extra attributes
-    # are tolerated by LangGraph.)
+    graph = await agent.compile(builder, checkpointer=checkpointer)
     graph.agent = agent  # type: ignore[attr-defined]
     return graph
 
 
 async def autonomous(info: dict, db_path: str = "ket_partner.db", csv_path: Optional[str] = None) -> CompiledStateGraph:
-    """Build the agent for the REPL entrypoint.
-
-    The returned graph has `.agent` attached — main.py uses it to call
-    `aclose()` on shutdown.
-    """
-    repos = await init_db(db_path, csv_path=csv_path)
-    # Mark session boundary so last_ai_message() ignores rows from prior
-    # sessions. Without this, a kid who exits mid-sentence sees the
-    # explanation of that unfinished sentence on restart (init_state
-    # would restore it, classify_intent would default to translation/idk,
-    # and the answer would leak).
+    db = await init_db(
+        db_path,
+        csv_path=csv_path,
+        default_nickname=info.get("nickname_kid", "宝贝"),
+        default_age=info.get("age", 8),
+    )
+    repos = Repos.for_user(db, "default")
     await repos.log.append_session_start()
-    return await build_agent(llm_flash, llm_max, repos, info)
+    return await build_agent(llm_flash, llm_max, db)
