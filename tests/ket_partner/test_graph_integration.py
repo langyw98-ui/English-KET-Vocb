@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain.messages import AIMessage, HumanMessage
+from langgraph.graph import StateGraph
 
 from flow.ket_partner.agent import KETPartnerAgent, build_agent
 from flow.ket_partner.config import load_config
@@ -13,7 +14,6 @@ from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.state import BTPKetState
 from flow.ket_partner.translation_evaluator import TranslationEval
 from flow.ket_partner.word_meaning_lookup import SentenceTranslation, WordMeaning
-from langgraph.graph import StateGraph
 
 
 def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translation_resp=None, naturalness_resp=None, sentence_text="The cat is on the bed."):

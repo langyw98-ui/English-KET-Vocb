@@ -1,5 +1,4 @@
 import json
-from typing import List
 
 from langchain.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
@@ -86,7 +85,7 @@ class TranslationEval(BaseModel):
     # original (e.g. "玩球" for "play") or distorting the sentence's overall
     # meaning. Default True so a missing/old field never falsely punishes.
     overall_correct: bool = True
-    wrong_words: List[WrongWord] = Field(default_factory=list)
+    wrong_words: list[WrongWord] = Field(default_factory=list)
 
     @field_validator("wrong_words", mode="before")
     @classmethod
@@ -109,7 +108,7 @@ class TranslationEval(BaseModel):
 async def evaluate_translation(
     llm,
     sentence: str,
-    words: List[str],
+    words: list[str],
     target: str,
     kid_input: str,
     target_context: str = "",
@@ -127,6 +126,6 @@ async def evaluate_translation(
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"evaluate_translation failed: {e}; defaulting to no wrong words")
         return TranslationEval(correct_translation="", wrong_words=[])

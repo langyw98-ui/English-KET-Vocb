@@ -76,9 +76,9 @@ async def generate_sentence(
     age: int,
     min_words: int,
     max_words: int,
-    avoid_sentences: list = None,
-    prior_attempts: list = None,
-    avoid_non_ket_words: list = None,
+    avoid_sentences: list | None = None,
+    prior_attempts: list | None = None,
+    avoid_non_ket_words: list | None = None,
     target_context: str = "",
 ) -> str:
     creative = llm.bind(temperature=0.8)
@@ -123,6 +123,6 @@ async def generate_sentence(
         response = await creative.ainvoke(messages)
         logger.debug(f"generate_sentence: {response.content.strip()}")
         return response.content.strip()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"generate_sentence failed: {e}")
         return f"I see a {target}."

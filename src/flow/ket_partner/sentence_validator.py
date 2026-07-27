@@ -1,7 +1,6 @@
 import json
 import re
 from os.path import dirname, join
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -111,7 +110,7 @@ def _candidate_roots(token: str) -> list:
 
 
 async def validate_sentence(
-    sentence: str, repos, target: Optional[str] = None
+    sentence: str, repos, target: str | None = None
 ) -> ValidationResult:
     # Multi-word target awareness: if the caller passed a multi-word target
     # (e.g. "alarm clock") and it appears contiguously in the sentence, treat

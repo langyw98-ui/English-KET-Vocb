@@ -86,6 +86,6 @@ async def test_evaluate_threads_target_context_into_prompt():
     )
     bound = llm.with_structured_output.return_value
     messages = bound.ainvoke.call_args.args[0]
-    target_msg = [m for m in messages if "Target word being tested" in m.content][0]
+    target_msg = next(m for m in messages if "Target word being tested" in m.content)
     assert "smart" in target_msg.content
     assert "clever" in target_msg.content

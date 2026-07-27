@@ -1,5 +1,4 @@
 import re
-from typing import Dict, List
 
 from langchain.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -65,7 +64,7 @@ async def lookup_word_meaning(
                 )
                 return WordMeaning(meaning=f"({word} 词义查询失败)")
         return result
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"lookup_word_meaning failed: {e}")
         return WordMeaning(meaning=f"({word} 词义查询失败)")
 
@@ -83,10 +82,10 @@ class _SingleMeaning(BaseModel):
 
 
 class WordMeanings(BaseModel):
-    meanings: List[_SingleMeaning] = Field(default_factory=list)
+    meanings: list[_SingleMeaning] = Field(default_factory=list)
 
 
-async def lookup_word_meanings(llm, sentence: str, words: List[str]) -> List[Dict[str, str]]:
+async def lookup_word_meanings(llm, sentence: str, words: list[str]) -> list[dict[str, str]]:
     """Batch lookup of Chinese meanings for several non-KET words in the
     context of one sentence. Used by generate_sentence_node to annotate
     accepted sentences that contain up to 1 (or, after retries, more)
@@ -106,7 +105,7 @@ async def lookup_word_meanings(llm, sentence: str, words: List[str]) -> List[Dic
         by_word = {m.word: m.meaning for m in result.meanings}
         # Preserve input order; fall back to "" if LLM dropped a word.
         return [{"word": w, "meaning": by_word.get(w, "")} for w in words]
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"lookup_word_meanings failed: {e}")
         return [{"word": w, "meaning": ""} for w in words]
 
@@ -131,6 +130,6 @@ async def lookup_sentence_translation(llm, sentence: str) -> SentenceTranslation
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"lookup_sentence_translation failed: {e}")
         return SentenceTranslation(translation="(翻译失败)")

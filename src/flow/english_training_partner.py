@@ -7,25 +7,21 @@ import json
 import random
 import re
 from inspect import currentframe
-from typing import (
-    TypedDict,
-    List,
-    Literal,
-    Optional,
-    cast
-)
-from langchain.messages import (
-    AnyMessage,
-    AIMessage,
-    ToolMessage,
-    SystemMessage,
-    HumanMessage,
-)
+from os.path import dirname, realpath
+from typing import Literal, TypedDict, cast
+
 from langchain.chat_models import BaseChatModel
+from langchain.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain.tools import tool
 from langgraph.graph import (
-    START,
     END,
+    START,
     StateGraph,
 )
 from langgraph.graph.state import CompiledStateGraph
@@ -33,33 +29,29 @@ from pydantic import BaseModel, Field
 
 from flow.agent import Task, memory
 from flow.common import logger
-from os.path import realpath, dirname
-
 
 # ── State ────────────────────────────────────────────────────────────
 
 
 class BTPState(TypedDict):
-    messages: List[AnyMessage]
-    intent: Optional[str]  # "tool" | "flow_resp"
-    next_action_node: Optional[str]  # 下一轮应进入的节点
-    phase: Optional[str]  # "negotiation" | "dialogue"
-    mode: Optional[str]  # "scene" | "free_chat"
-    scene_category: Optional[str]  # 场景类别
-    scene_name: Optional[str]  # 场景名称
-    ai_role: Optional[str]  # AI 扮演的角色
-    user_role: Optional[str]  # 用户扮演的角色
-    proposed_scene: Optional[dict]  # 当前提议的场景信息
-    input_type: Optional[
-        str
-    ]  # "non_compliant" | "vocab_gap" | "sentence_gap" | "grammar_error" | "clean"
-    teach_words: Optional[str]  # 需要教的词汇（中文→英文映射）
-    correct_sentence: Optional[str]  # 修正后的完整句子
-    error_explain: Optional[str]  # 错误解释（中文，简洁）
-    error_counts: Optional[dict]  # 同类语法错误纠正次数追踪
-    awaiting_scene_selection: Optional[bool]  # 上轮展示了场景列表，等待用户选择
-    valid_dialogues: List[AnyMessage]  # 有效对话记录（clean轮次+开场白）
-    tool_result: Optional[str]
+    messages: list[AnyMessage]
+    intent: str | None  # "tool" | "flow_resp"
+    next_action_node: str | None  # 下一轮应进入的节点
+    phase: str | None  # "negotiation" | "dialogue"
+    mode: str | None  # "scene" | "free_chat"
+    scene_category: str | None  # 场景类别
+    scene_name: str | None  # 场景名称
+    ai_role: str | None  # AI 扮演的角色
+    user_role: str | None  # 用户扮演的角色
+    proposed_scene: dict | None  # 当前提议的场景信息
+    input_type: str | None  # "non_compliant" | "vocab_gap" | "sentence_gap" | "grammar_error" | "clean"
+    teach_words: str | None  # 需要教的词汇（中文→英文映射）
+    correct_sentence: str | None  # 修正后的完整句子
+    error_explain: str | None  # 错误解释（中文，简洁）
+    error_counts: dict | None  # 同类语法错误纠正次数追踪
+    awaiting_scene_selection: bool | None  # 上轮展示了场景列表，等待用户选择
+    valid_dialogues: list[AnyMessage]  # 有效对话记录（clean轮次+开场白）
+    tool_result: str | None
 
 
 # ── Structured Output Models ──────────────────────────────────────────
@@ -70,7 +62,7 @@ class AnalysisOutput(BaseModel):
         description='必须选出至少1个需要教的词汇，格式"中文词"对应的英文是"English word"，多个用逗号分隔'
     )
     correct_sentence: str = Field(description="修正后的完整英文句子，必须填写")
-    error_explain: Optional[str] = Field(
+    error_explain: str | None = Field(
         default=None, description="简短的中文错误解释，无错误时填null"
     )
 
@@ -173,8 +165,8 @@ class BTPAutonomous:
         self.system_prompt = SystemMessage(content=system_prompt)
         self.info = info
         self.is_init_state = True
-        self.scenes: List[dict] = []
-        self._last_proposed_name: Optional[str] = None
+        self.scenes: list[dict] = []
+        self._last_proposed_name: str | None = None
 
     # ── compile ──────────────────────────────────────────────────
 
@@ -282,7 +274,7 @@ class BTPAutonomous:
                 logger.debug(f"{valid[-5:]}")
         return state
 
-    def _load_scenes(self) -> List[dict]:
+    def _load_scenes(self) -> list[dict]:
         """Load scenes from data/scenes.json; fall back to hardcoded list."""
         try:
             scene_path = f"{realpath(dirname(__file__))}/data/scenes.json"
@@ -329,7 +321,7 @@ class BTPAutonomous:
         except Exception:
             return f"{scene['category']}中的{scene['name']}场景"
 
-    async def _generate_custom_scene(self, user_desc: str) -> Optional[dict]:
+    async def _generate_custom_scene(self, user_desc: str) -> dict | None:
         """根据用户描述生成自定义场景字段。"""
         prompt = [
             SystemMessage(
@@ -461,11 +453,11 @@ class BTPAutonomous:
                             )
                         )
                     except Exception as e:
-                        state["tool_result"] = f"工具执行失败: {str(e)}"
+                        state["tool_result"] = f"工具执行失败: {e!s}"
                         logger.error(f"工具 {tool_name} 执行失败: {e}")
                         current_messages.append(
                             ToolMessage(
-                                content=f"工具执行失败: {str(e)}",
+                                content=f"工具执行失败: {e!s}",
                                 tool_call_id=tool_call["id"],
                             )
                         )
@@ -679,11 +671,11 @@ class BTPAutonomous:
                             )
                         )
                     except Exception as e:
-                        state["tool_result"] = f"工具执行失败: {str(e)}"
+                        state["tool_result"] = f"工具执行失败: {e!s}"
                         logger.error(f"工具 {tool_name} 执行失败: {e}")
                         current_messages.append(
                             ToolMessage(
-                                content=f"工具执行失败: {str(e)}",
+                                content=f"工具执行失败: {e!s}",
                                 tool_call_id=tool_call["id"],
                             )
                         )

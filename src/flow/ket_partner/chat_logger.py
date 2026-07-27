@@ -1,13 +1,14 @@
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 
 class ChatLogger:
     def __init__(self, log_dir: str):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self._fp = None
-        self._session = None
+        self._fp: TextIO | None = None
+        self._session: Path | None = None
 
     def _next_index(self) -> int:
         existing = list(self.log_dir.glob("chat_log_*.txt"))

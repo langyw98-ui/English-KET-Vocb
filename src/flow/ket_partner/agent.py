@@ -1,5 +1,4 @@
 import asyncio
-from typing import Optional
 
 from langchain.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -438,7 +437,7 @@ class KETPartnerAgent:
     async def _run_summary_safe(self, repos: Repos) -> None:
         try:
             await run_profile_summary(self.llm_smart, repos)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"background summary failed: {e}")
 
     async def aclose(self, timeout: float = 2.0) -> None:
@@ -541,7 +540,7 @@ async def build_agent(llm_flash, llm_smart, db, checkpointer=None) -> CompiledSt
     return graph
 
 
-async def autonomous(info: dict, db_path: str = "ket_partner.db", csv_path: Optional[str] = None) -> CompiledStateGraph:
+async def autonomous(info: dict, db_path: str = "ket_partner.db", csv_path: str | None = None) -> CompiledStateGraph:
     db = await init_db(
         db_path,
         csv_path=csv_path,

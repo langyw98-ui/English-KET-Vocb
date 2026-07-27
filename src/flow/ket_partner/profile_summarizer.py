@@ -1,4 +1,3 @@
-from typing import List
 
 from langchain.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -16,7 +15,7 @@ _SYSTEM = """你分析一个小朋友的 KET 词汇学习历史,增量更新学�
 
 
 class ProfileSummary(BaseModel):
-    weakness_words: List[str] = Field(default_factory=list)
+    weakness_words: list[str] = Field(default_factory=list)
     dialogue_strategy: str = ""
 
 
@@ -38,5 +37,5 @@ async def run_profile_summary(llm, repos: Repos) -> None:
             weakness_words=summary.weakness_words,
             dialogue_strategy=summary.dialogue_strategy,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"profile summary failed: {e}; keeping old profile")

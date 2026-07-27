@@ -120,7 +120,7 @@ SQLite (ket_partner.db)
 
 2. **同源部署**：开发用 Vite dev server (5173) 走 `vite.config.ts` 代理 `/api` 到 8000；生产用 FastAPI `StaticFiles` 服务 `web/dist/`。**避免 CORS 配置**。
 
-3. **AsyncSqliteSaver 替换 MemorySaver**：现有 `flow/agent.py:49` 的 `MemorySaver()` 在后端重启时丢 LangGraph 状态。换成 `AsyncSqliteSaver`，与业务表共用同一 sqlite 文件，后端重启后 checkpointer 状态保留。这是**必须的修改**。
+3. **AsyncSqliteSaver 替换 MemorySaver**：现有 `flow/agent.py:49` 的 `MemorySaver()` 在后端重启时丢 LangGraph 状态。换成 `AsyncSqliteSaver`，与业务表共用同一 sqlite 文件，后端重启后 checkpointer 状态保留。应用启动时须调用 `await checkpointer.setup()` 创建底层 checkpoint 表。同时在 `init_state` 节点保持对状态中 `messages` 的滑动窗口截断（如保留最近 10 条），防止在持久化 checkpointer 下上下文随着对话无限膨胀。
 
 4. **无状态 Agent 单例**：见下节"Agent 重构"。
 
@@ -184,27 +184,31 @@ async def init_state(self, state: BTPKetState, config: RunnableConfig) -> dict:
 
 ```sql
 CREATE TABLE IF NOT EXISTS ket_vocabulary (
-    word    TEXT PRIMARY KEY,
+    word    TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
     pos     TEXT,
-    is_seed INTEGER DEFAULT 0
+    is_seed INTEGER DEFAULT 0,
+    PRIMARY KEY (word, context)
 );
 CREATE INDEX IF NOT EXISTS idx_vocab_seed ON ket_vocabulary(is_seed);
 
-CREATE TABLE IF NOT EXISTS ket_word_topics (
-    word  TEXT NOT NULL,
-    topic TEXT NOT NULL,
-    PRIMARY KEY (word, topic),
-    FOREIGN KEY (word) REFERENCES ket_vocabulary(word)
+CREATE TABLE IF NOT EXISTS ket_vocab_topics (
+    word    TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
+    topic   TEXT NOT NULL,
+    PRIMARY KEY (word, context, topic)
 );
-CREATE INDEX IF NOT EXISTS idx_word_topics_topic ON ket_word_topics(topic);
+CREATE INDEX IF NOT EXISTS idx_vocab_topics_topic ON ket_vocab_topics(topic);
+CREATE INDEX IF NOT EXISTS idx_vocab_topics_lookup ON ket_vocab_topics(word, context);
 ```
 
 **业务表（改 + 新增）：**
 
 ```sql
--- vocab_stats: 加 user_id, PK 改 (user_id, word)
+-- vocab_stats: 加 user_id, PK 改 (user_id, word, context)
 CREATE TABLE IF NOT EXISTS vocab_stats (
     word              TEXT NOT NULL,
+    context           TEXT NOT NULL DEFAULT '',
     user_id           TEXT NOT NULL DEFAULT 'default',
     exposed_count     INTEGER DEFAULT 0,
     correct_count     INTEGER DEFAULT 0,
@@ -213,7 +217,7 @@ CREATE TABLE IF NOT EXISTS vocab_stats (
     status            TEXT DEFAULT 'new',
     first_seen_at     TIMESTAMP,
     last_seen_at      TIMESTAMP,
-    PRIMARY KEY (user_id, word)
+    PRIMARY KEY (user_id, word, context)
 );
 CREATE INDEX IF NOT EXISTS idx_stats_user_status ON vocab_stats(user_id, status);
 
@@ -281,6 +285,9 @@ async def init_db(
 ) -> aiosqlite.Connection:
     db = await aiosqlite.connect(db_path)
     db.row_factory = sqlite3.Row
+    # 开启 WAL 模式与 5s 忙等待超时, 解决 async 并发读写 database is locked 问题
+    await db.execute("PRAGMA journal_mode=WAL;")
+    await db.execute("PRAGMA busy_timeout=5000;")
     await db.executescript(_SCHEMA)
 
     # 幂等 seed: 进程每次启动都跑; 首次插入, 后续 OR IGNORE 跳过
@@ -379,6 +386,8 @@ class StatsRepo:
         if category == "struggling":
             return (
                 "SELECT * FROM vocab_stats WHERE user_id=? "
+                "AND status NOT IN ('mastered', 'learning') "
+                "AND exposed_count > 0 "
                 "AND (wrong_count >= ? OR (exposed_count >= ? AND mastery_score = 0))",
                 (self._user_id, wc_min, ec_min)
             )
@@ -393,13 +402,13 @@ class StatsRepo:
         if category == "unused":
             # 在词表但无 stats 行, 或 stats 行 exposed_count=0 (与 exporter._classify 一致)
             return (
-                "SELECT v.word, COALESCE(s.mastery_score, 0) AS mastery_score, "
+                "SELECT v.word, v.context, COALESCE(s.mastery_score, 0) AS mastery_score, "
                 "COALESCE(s.exposed_count, 0) AS exposed_count, "
                 "COALESCE(s.correct_count, 0) AS correct_count, "
                 "COALESCE(s.wrong_count, 0) AS wrong_count, "
                 "COALESCE(s.status, 'new') AS status "
                 "FROM ket_vocabulary v "
-                "LEFT JOIN vocab_stats s ON s.word = v.word AND s.user_id = ? "
+                "LEFT JOIN vocab_stats s ON s.word = v.word AND s.context = v.context AND s.user_id = ? "
                 "WHERE s.word IS NULL OR s.exposed_count = 0",
                 (self._user_id,)
             )
@@ -465,6 +474,7 @@ class ReportResponse(BaseModel):
 
 class ReportWord(BaseModel):
     word: str
+    context: str = ""
     mastery_score: int
     exposed_count: int
     correct_count: int
@@ -486,6 +496,78 @@ class MessageOut(BaseModel):
     turn_id: Optional[int] = None
     created_at: datetime
 ```
+
+### JSON 契约示例（Payload Examples）
+
+**1. POST /api/chat**
+- 请求 (Request):
+  ```json
+  {
+    "text": "猫在冰上飞"
+  }
+  ```
+- 响应 (Response 200 OK):
+  ```json
+  {
+    "ai_reply": "错了 1 个词：\n- slipped: 飞→滑倒\n正确翻译：猫在冰上滑倒了",
+    "turn_id": 1
+  }
+  ```
+
+**2. GET /api/report**
+- 响应 (Response 200 OK):
+  ```json
+  {
+    "mastered_count": 12,
+    "learning_count": 8,
+    "struggling_count": 3,
+    "used_count": 45,
+    "unused_count": 1432,
+    "total_words": 1500
+  }
+  ```
+
+**3. GET /api/report/learning?page=1&page_size=100**
+- 响应 (Response 200 OK):
+  ```json
+  {
+    "category": "learning",
+    "page": 1,
+    "page_size": 100,
+    "total": 8,
+    "total_pages": 1,
+    "words": [
+      {
+        "word": "slip",
+        "context": "slipping on ice",
+        "mastery_score": 1,
+        "exposed_count": 2,
+        "correct_count": 1,
+        "wrong_count": 1,
+        "status": "learning"
+      }
+    ]
+  }
+  ```
+
+**4. GET /api/messages?limit=15**
+- 响应 (Response 200 OK):
+  ```json
+  [
+    {
+      "role": "user",
+      "content": "猫在冰上飞",
+      "turn_id": 1,
+      "created_at": "2026-07-27T15:00:00.000Z"
+    },
+    {
+      "role": "ai",
+      "content": "错了 1 个词：\n- slipped: 飞→滑倒\n正确翻译：猫在冰上滑倒了",
+      "turn_id": 1,
+      "created_at": "2026-07-27T15:00:02.000Z"
+    }
+  ]
+  ```
 
 ### `POST /api/chat` 实现
 
@@ -521,11 +603,10 @@ async def chat(
 
     ai_text = result_state["messages"][-1].content
 
-    # 落 DB 让 /api/messages 拉到本轮对话
-    turn_id = await _next_turn_id(repos)
-    await repos.log.append(role="user", content=req.text, turn_id=turn_id)
-    # 注意: agent 内部 persist_turn_node 已写 AI 消息; 这里不重复写
-    # 若实测发现 AI 消息没被 persist, 这里补一行 await repos.log.append(role="ai", ...)
+    # 注意: agent 内部 persist_turn_node 已把 user/ai 消息写入 conversation_log 并且更新了 total_turns;
+    # 这里不能重复写 log.append, 直接从 profile 读取最新的 turn_id
+    profile = await repos.profile.get()
+    turn_id = profile.get("total_turns", 0)
 
     return ChatResponse(ai_reply=ai_text, turn_id=turn_id)
 ```
@@ -630,13 +711,11 @@ async def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 ```
 
-### FastAPI 启停（`src/api/app.py`）
+from contextlib import asynccontextmanager
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-```python
-app = FastAPI()
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     settings = Settings()
     db = await init_db(
         settings.DB_PATH,
@@ -644,18 +723,23 @@ async def startup():
         default_nickname=settings.KID_NICKNAME,
         default_age=settings.KID_AGE,
     )
-    agent = await build_agent(llm_flash, llm_max, db)
+    # 初始化 AsyncSqliteSaver 并显式执行 setup 创建 checkpoints 依赖表
+    checkpointer = AsyncSqliteSaver(db)
+    await checkpointer.setup()
+
+    agent = await build_agent(llm_flash, llm_max, db, checkpointer=checkpointer)
     app.state.settings = settings
     app.state.db = db
     app.state.agent = agent
 
-@app.on_event("shutdown")
-async def shutdown():
-    agent = app.state.agent
+    yield
+
     inner = getattr(agent, "agent", None)
     if inner is not None:
         await inner.aclose()
     await app.state.db.close()
+
+app = FastAPI(lifespan=lifespan)
 
 # 全局 exception handler
 @app.exception_handler(Exception)
@@ -760,7 +844,8 @@ if Path("web/dist").exists():
 ### fetch wrapper（`web/src/api/client.ts`）
 
 ```typescript
-const BASE = import.meta.env.DEV ? 'http://localhost:8000' : ''
+// 开发模式下走 vite.config.ts 的 /api 代理, 生产模式下由 FastAPI 托管静态资源, 统一使用相对路径路径避免 CORS 跨域问题
+const BASE = ''
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -769,7 +854,12 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`API ${res.status}: ${text}`)
+    let detail = text
+    try {
+      const json = JSON.parse(text)
+      detail = json.detail || text
+    } catch {}
+    throw new Error(`API ${res.status}: ${detail}`)
   }
   return res.json()
 }
@@ -801,6 +891,7 @@ export interface ReportResponse {
 
 export interface ReportWord {
   word: string
+  context: string
   mastery_score: number
   exposed_count: number
   correct_count: number
@@ -845,6 +936,7 @@ export const useChatStore = defineStore('chat', () => {
       const res = await api<ChatResponse>('/api/chat', {
         method: 'POST', body: JSON.stringify({ text })
       })
+      optimistic.turn_id = res.turn_id
       messages.value.push({
         role: 'ai', content: res.ai_reply, turn_id: res.turn_id,
         created_at: new Date().toISOString()
@@ -1018,7 +1110,12 @@ C 阶段没有任何"重写 Agent / Repo"工作，全部是基础设施层与 UI
 
 ## 已知约束 / 项目规范
 
-- **Python venv**：`D:/ProgramData/miniforge3/envs/langgraph/python.exe`（base miniforge3 缺依赖）
-- **LangChain structured_output**：所有 `with_structured_output(Schema)` 调用必须传 `method="function_calling"`；mocks 必须接受 `**kwargs`
-- **无 emoji**：用户终端 GBK 编码，emoji 渲染为乱码。日志、提示文案仅用纯中文 + 常见 CJK 标点
-- **不要在 console / log 输出 emoji**
+- **编码规范准则**：严格遵循 [.agents/rules/code-standards.md](file:///D:/Workspace/HBuilderProjects/%E8%8B%B1%E8%AF%ADKET/%E8%8B%B1%E8%AF%AD/.agents/rules/code-standards.md) 中的全部开发纪律：
+  1. 异常捕获禁止裸 `except` / `except Exception`；所有跨边界调用（LLM/HTTP/DB/文件）必须捕获具体异常；所有 fallback 必须带有 `logger.warning(..., exc_info=True)`；
+  2. LLM 调用统一使用 `with_structured_output` + Pydantic Schema（且必须传 `method="function_calling"`）；
+  3. 异步函数内禁止任何同步阻塞 IO，数据契约（Pydantic DTO）与路由逻辑分文件隔离；
+  4. 单元测试必须具备 Hermetic 性，断言 mock 时必须校验 `call_count` / `assert_awaited_once`。
+- **RTK 命令行前缀**：按照 [.agents/rules/antigravity-rtk-rules.md](file:///D:/Workspace/HBuilderProjects/%E8%8B%B1%E8%AF%ADKET/%E8%8B%B1%E8%AF%AD/.agents/rules/antigravity-rtk-rules.md)，所有终端命令统一使用 `rtk` 前缀（如 `rtk pytest`）。
+- **Python venv**：`D:/ProgramData/miniforge3/envs/langgraph/python.exe`（base miniforge3 缺依赖）。
+- **静态检查三项**：验证阶段必须同时通过 `ruff check`、`mypy`、`pytest`。
+- **无 emoji**：用户终端 GBK 编码，emoji 渲染为乱码。日志、提示文案仅用纯中文 + 常见 CJK 标点，不要在 console / log 输出 emoji。

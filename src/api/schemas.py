@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+
 from pydantic import BaseModel
 
 
@@ -37,11 +37,11 @@ class ReportCategoryResponse(BaseModel):
     page_size: int
     total: int
     total_pages: int
-    words: List[ReportWord]
+    words: list[ReportWord]
 
 
 class MessageOut(BaseModel):
     role: str
     content: str
-    turn_id: Optional[int] = None
+    turn_id: int | None = None
     created_at: datetime

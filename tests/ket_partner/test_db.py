@@ -1,7 +1,7 @@
-from typing import Optional
+
 import pytest
 
-from flow.ket_partner.db import _derive_status, init_db, Repos
+from flow.ket_partner.db import Repos, _derive_status, init_db
 
 
 def test_derive_status_mastered_at_score_cap():
@@ -43,7 +43,7 @@ def test_derive_status_preserves_exposed_and_learning_below_cap():
     assert _derive_status("learning", 2) == "mastered"
 
 
-async def _init_repos(db_path: str, csv_path: Optional[str] = None) -> Repos:
+async def _init_repos(db_path: str, csv_path: str | None = None) -> Repos:
     db = await init_db(db_path, csv_path=csv_path)
     return Repos.for_user(db, "default")
 

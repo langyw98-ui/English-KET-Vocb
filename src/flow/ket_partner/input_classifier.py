@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from langchain.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -18,10 +18,10 @@ If asks_meaning, extract the asked_word (lowercase English). Otherwise asked_wor
 
 class IntentClassification(BaseModel):
     intent: Literal["translation", "idk", "asks_meaning", "off_topic", "non_compliant"]
-    asked_word: Optional[str] = Field(default=None)
+    asked_word: str | None = Field(default=None)
 
 
-async def classify_intent(llm, last_english_sentence: Optional[str], kid_input: str) -> IntentClassification:
+async def classify_intent(llm, last_english_sentence: str | None, kid_input: str) -> IntentClassification:
     structured = llm.with_structured_output(IntentClassification, method="function_calling")
     messages = [
         SystemMessage(content=_SYSTEM),
@@ -30,6 +30,6 @@ async def classify_intent(llm, last_english_sentence: Optional[str], kid_input: 
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"classify_intent failed: {e}; defaulting to translation")
         return IntentClassification(intent="translation", asked_word=None)

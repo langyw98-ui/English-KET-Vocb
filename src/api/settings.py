@@ -1,10 +1,11 @@
-from typing import Literal, Optional
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     DB_PATH: str = "ket_partner.db"
-    CSV_PATH: Optional[str] = None
+    CSV_PATH: str | None = None
     AUTH_MODE: Literal["disabled", "jwt"] = "disabled"
     KID_NICKNAME: str = "宝贝"
     KID_AGE: int = 8

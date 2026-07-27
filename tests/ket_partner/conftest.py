@@ -47,5 +47,5 @@ async def _close_aiosqlite_connections():
         for conn in opened:
             try:
                 await conn.close()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass

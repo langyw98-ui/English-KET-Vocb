@@ -1,47 +1,29 @@
-from typing import (
-    TypedDict,
-    Tuple,
-    List,
-    Literal,
-    Dict,
-    Callable,
-    Any,
-    Union,
-    Type,
-)
-from dataclasses import dataclass
 from json import dumps
-from langchain.messages import (
-    AnyMessage,
-    AIMessage,
-    ToolMessage,
-    SystemMessage,
-    HumanMessage,
+from typing import (
+    Literal,
+    TypedDict,
 )
+
 from langchain.chat_models import BaseChatModel
-from langchain_core.tools import (
-    tool as langchain_tool,
+from langchain.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
 )
-from langchain_core.runnables import (
-    RunnableLambda,
-    RunnableParallel,
-    RunnablePassthrough,
+from langgraph.checkpoint.memory import (
+    MemorySaver,
 )
 from langgraph.graph import (
-    START,
     END,
+    START,
     StateGraph,
 )
 from langgraph.graph.state import (
     CompiledStateGraph,
 )
-from langgraph.types import Command
 from pydantic import BaseModel
-from langchain_core.tools import StructuredTool
-
-from langgraph.checkpoint.memory import (
-    MemorySaver,
-)
 
 from flow.common import logger
 
@@ -50,16 +32,16 @@ memory = MemorySaver()
 
 
 class FlowState(TypedDict):
-    messages: List[AnyMessage]
+    messages: list[AnyMessage]
 
 
 class Task(BaseModel):
     method: str
-    params: Dict | None = None
+    params: dict | None = None
 
 
 def get_tool_call_signature(
-    tool_calls: List[Dict],
+    tool_calls: list[dict],
 ) -> str:
     extracted = []
     for tc in tool_calls:
@@ -79,7 +61,7 @@ class Autonomous:
         self,
         model: BaseChatModel,
         prompt: str,
-        tools: Tuple,
+        tools: tuple,
     ):
         self.model = model.bind_tools(tools)
         logger.debug(prompt)

@@ -1,4 +1,3 @@
-from typing import List
 
 from flow.common import logger
 from flow.ket_partner.config import KetConfig
@@ -11,7 +10,7 @@ def _fmt_word(word: str, context: str) -> str:
     return f"{word}({context})" if context else word
 
 
-async def _fetch_all_stats(repos: Repos) -> List[dict]:
+async def _fetch_all_stats(repos: Repos) -> list[dict]:
     async with repos.stats._db.execute(
         "SELECT v.word, v.context, v.pos, s.exposed_count, s.correct_count, "
         "s.wrong_count, s.mastery_score, s.status "
@@ -50,7 +49,7 @@ def _classify(row: dict, cfg: KetConfig) -> str:
     return "used"
 
 
-def _render_markdown(profile: dict, rows: List[dict], cfg: KetConfig) -> str:
+def _render_markdown(profile: dict, rows: list[dict], cfg: KetConfig) -> str:
     mastered = [r for r in rows if _classify(r, cfg) == "mastered"]
     learning = [r for r in rows if _classify(r, cfg) == "learning"]
     used = [r for r in rows if _classify(r, cfg) == "used"]
@@ -122,7 +121,7 @@ async def export_learning_report(
         content = _render_markdown(profile, rows, cfg)
     else:
         raise ValueError(f"unsupported format: {fmt}")
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8") as f:  # noqa: ASYNC230
         f.write(content)
     logger.info(f"Exported learning report to {output_path}")
     return output_path

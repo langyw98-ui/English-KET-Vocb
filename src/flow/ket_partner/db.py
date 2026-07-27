@@ -2,9 +2,9 @@ import csv
 import json
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from os.path import dirname, join
-from typing import Dict, List, NamedTuple, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import aiosqlite
 
@@ -108,7 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_recent_user_created ON recent_sentences(user_id, 
 
 
 def _derive_status(
-    current_status: Optional[str],
+    current_status: str | None,
     mastery_score: int,
     is_target: bool = False,
 ) -> str:
@@ -129,7 +129,7 @@ class VocabRepo:
         self._db = db
         self._user_id = user_id
 
-    async def get_topics_for_word(self, word: str, context: str = "") -> List[str]:
+    async def get_topics_for_word(self, word: str, context: str = "") -> list[str]:
         async with self._db.execute(
             "SELECT topic FROM ket_vocab_topics "
             "WHERE word = ? AND context = ? ORDER BY topic",
@@ -140,7 +140,7 @@ class VocabRepo:
 
     async def get_ket_word(
         self, word: str, context: str = ""
-    ) -> Optional[WordRef]:
+    ) -> WordRef | None:
         async with self._db.execute(
             "SELECT word, context FROM ket_vocabulary "
             "WHERE word = ? COLLATE NOCASE AND context = ? LIMIT 1",
@@ -151,7 +151,7 @@ class VocabRepo:
             return None
         return WordRef(word=row[0], context=row[1])
 
-    async def get_ket_word_any_context(self, word: str) -> Optional[WordRef]:
+    async def get_ket_word_any_context(self, word: str) -> WordRef | None:
         async with self._db.execute(
             "SELECT word, context FROM ket_vocabulary "
             "WHERE word = ? COLLATE NOCASE "
@@ -165,7 +165,7 @@ class VocabRepo:
             return None
         return WordRef(word=row[0], context=row[1])
 
-    async def words_in_topic_without_stats(self, topic: str) -> List[WordRef]:
+    async def words_in_topic_without_stats(self, topic: str) -> list[WordRef]:
         sql = (
             "SELECT v.word, v.context FROM ket_vocabulary v "
             "JOIN ket_vocab_topics t ON v.word = t.word AND v.context = t.context "
@@ -177,7 +177,7 @@ class VocabRepo:
             rows = await cur.fetchall()
         return [WordRef(word=r[0], context=r[1]) for r in rows]
 
-    async def unexposed_notopic_words(self) -> List[WordRef]:
+    async def unexposed_notopic_words(self) -> list[WordRef]:
         sql = (
             "SELECT v.word, v.context FROM ket_vocabulary v "
             "WHERE NOT EXISTS ("
@@ -193,7 +193,7 @@ class VocabRepo:
             rows = await cur.fetchall()
         return [WordRef(word=r[0], context=r[1]) for r in rows]
 
-    async def topics_with_unmastered(self, exclude: Optional[str] = None) -> List[str]:
+    async def topics_with_unmastered(self, exclude: str | None = None) -> list[str]:
         sql = (
             "SELECT t.topic FROM ket_vocab_topics t "
             "LEFT JOIN vocab_stats s ON t.word = s.word AND t.context = s.context AND s.user_id = ? "
@@ -235,7 +235,7 @@ class StatsRepo:
         ) as cur:
             return await cur.fetchone() is not None
 
-    async def get(self, word: str, context: str = "") -> Optional[dict]:
+    async def get(self, word: str, context: str = "") -> dict | None:
         async with self._db.execute(
             "SELECT word, context, exposed_count, correct_count, wrong_count, "
             "mastery_score, status, first_seen_at, last_seen_at "
@@ -264,12 +264,12 @@ class StatsRepo:
         delta: int = 0,
         exposed: bool = False,
         is_target: bool = False,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         if context == "" and not await self._vocab_has_default_sense(word):
             return None
 
         existing = await self.get(word, context)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if existing is None:
             score = min(MASTERY_CAP, max(0, delta))
             await self._db.execute(
@@ -322,7 +322,7 @@ class StatsRepo:
             row = await cur.fetchone()
         return row[0] if row else 0
 
-    async def oldest_learning_word(self) -> Optional[WordRef]:
+    async def oldest_learning_word(self) -> WordRef | None:
         async with self._db.execute(
             "SELECT word, context FROM vocab_stats WHERE user_id=? AND status='learning' "
             "ORDER BY last_seen_at ASC LIMIT 1",
@@ -354,7 +354,7 @@ class StatsRepo:
 
     async def list_by_category(
         self, category: str, offset: int = 0, limit: int = 100
-    ) -> List[dict]:
+    ) -> list[dict]:
         sql, params = self._category_where_sql(category)
         sql += " LIMIT ? OFFSET ?"
         full_params = (*params, limit, offset)
@@ -475,7 +475,7 @@ class ProfileRepo:
 
         user_updates = {k: v for k, v in fields.items() if k in user_allowed}
         if user_updates:
-            set_parts = [f"{k}=?" for k in user_updates.keys()]
+            set_parts = [f"{k}=?" for k in user_updates]
             values = list(user_updates.values())
             values.append(self._user_id)
             await self._db.execute(
@@ -493,7 +493,7 @@ class ProfileRepo:
                 set_parts.append(f"{k}=?")
                 values.append(v)
             set_parts.append("updated_at=?")
-            values.append(datetime.utcnow())
+            values.append(datetime.now(timezone.utc))
             values.append(self._user_id)
             await self._db.execute(
                 f"UPDATE kid_profile SET {', '.join(set_parts)} WHERE user_id=?",
@@ -511,9 +511,9 @@ class LogRepo:
         self,
         role: str,
         content: str,
-        words_used: Optional[List[str]] = None,
-        target_words: Optional[List[Dict[str, str]]] = None,
-        turn_id: Optional[int] = None,
+        words_used: list[str] | None = None,
+        target_words: list[dict[str, str]] | None = None,
+        turn_id: int | None = None,
     ) -> None:
         await self._db.execute(
             "INSERT INTO conversation_log (user_id, role, content, words_used, target_words, turn_id) "
@@ -529,7 +529,7 @@ class LogRepo:
         )
         await self._db.commit()
 
-    async def recent(self, limit: int = 5) -> List[dict]:
+    async def recent(self, limit: int = 5) -> list[dict]:
         async with self._db.execute(
             "SELECT role, content, words_used, target_words, turn_id, created_at "
             "FROM conversation_log WHERE user_id=? ORDER BY id DESC LIMIT ?",
@@ -549,12 +549,17 @@ class LogRepo:
             for r in rows
         ]
 
-    async def last_ai_message(self) -> Optional[dict]:
-        async with self._db.execute(
+    async def append_session_start(self) -> None:
+        await self.append("system", "session_start", words_used=[], target_words=[])
+
+    async def last_ai_message(self) -> dict | None:
+        sql = (
             "SELECT content, words_used, target_words FROM conversation_log "
-            "WHERE role='ai' AND user_id=? ORDER BY id DESC LIMIT 1",
-            (self._user_id,),
-        ) as cur:
+            "WHERE role='ai' AND user_id=? AND id > COALESCE("
+            "    (SELECT MAX(id) FROM conversation_log WHERE role='system' AND content='session_start' AND user_id=?), 0"
+            ") ORDER BY id DESC LIMIT 1"
+        )
+        async with self._db.execute(sql, (self._user_id, self._user_id)) as cur:
             row = await cur.fetchone()
         if row is None:
             return None
@@ -570,7 +575,7 @@ class RecentSentencesRepo:
         self._db = db
         self._user_id = user_id
 
-    async def list_recent(self, limit: int = 20) -> List[str]:
+    async def list_recent(self, limit: int = 20) -> list[str]:
         async with self._db.execute(
             "SELECT sentence FROM recent_sentences WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?",
             (self._user_id, limit),
@@ -579,7 +584,7 @@ class RecentSentencesRepo:
         return [r[0] for r in rows]
 
     async def append(self, sentence: str, window: int = 20) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         await self._db.execute(
             "INSERT INTO recent_sentences (user_id, sentence, created_at) VALUES (?, ?, ?)",
             (self._user_id, sentence, now),
@@ -592,9 +597,9 @@ class RecentSentencesRepo:
         )
         await self._db.commit()
 
-    async def list_recent_scaffolding(self, window: int = 20) -> List[List[str]]:
+    async def list_recent_scaffolding(self, window: int = 20) -> list[list[str]]:
         sentences = await self.list_recent(limit=window)
-        scaffolding_list: List[List[str]] = []
+        scaffolding_list: list[list[str]] = []
         pattern = re.compile(r"[A-Za-z']+")
         for s in sentences:
             tokens = [t.lower() for t in pattern.findall(s)]
@@ -639,7 +644,7 @@ _DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "KET_vocabulary
 
 async def init_db(
     db_path: str,
-    csv_path: Optional[str] = None,
+    csv_path: str | None = None,
     default_nickname: str = "宝贝",
     default_age: int = 8,
 ) -> aiosqlite.Connection:
@@ -665,7 +670,7 @@ async def init_db(
 
 
 async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:
-    with open(csv_path, "r", encoding="utf-8-sig") as f:
+    with open(csv_path, "r", encoding="utf-8-sig") as f:  # noqa: ASYNC230
         reader = csv.DictReader(f)
         count = 0
         for row in reader:

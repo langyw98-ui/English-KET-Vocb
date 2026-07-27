@@ -1,23 +1,23 @@
+from logging import getLogger
 from os import environ
+
 from httpx import AsyncClient
-from openai import AsyncOpenAI
 from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
+from pydantic import SecretStr
+
+logger = getLogger("ket_partner")
 
 if environ.get("PYTEST_VERSION") is not None:
-    from logging import getLogger
-
-    logger = getLogger()
     IS_RUNNING_IN_PYTEST = True
 else:
-    from loguru import logger
-
     IS_RUNNING_IN_PYTEST = False
 
 extra_params = {"enable_thinking": False}
 
 dashscope_api_key = environ.get("DASHSCOPE_API_KEY", "")
 llm_plus = ChatOpenAI(
-    api_key=dashscope_api_key,
+    api_key=SecretStr(dashscope_api_key),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     model="qwen3.6-plus",
     client=AsyncOpenAI(
@@ -30,7 +30,7 @@ llm_plus = ChatOpenAI(
 )
 
 llm_max = ChatOpenAI(
-    api_key=dashscope_api_key,
+    api_key=SecretStr(dashscope_api_key),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     model="qwen3.6-max-preview",
     client=AsyncOpenAI(
@@ -43,7 +43,7 @@ llm_max = ChatOpenAI(
 )
 
 llm_flash = ChatOpenAI(
-    api_key=dashscope_api_key,
+    api_key=SecretStr(dashscope_api_key),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     model="qwen3.6-flash",
     client=AsyncOpenAI(
@@ -58,7 +58,7 @@ llm_flash = ChatOpenAI(
 
 doubao_api = environ.get("DOUBAO_API_KEY", "")
 llm_doubao = ChatOpenAI(
-    api_key=doubao_api,
+    api_key=SecretStr(doubao_api),
     base_url="https://ark.cn-beijing.volces.com/api/v3",
     # model="doubao-seed-1-6-251015",
     # model="doubao-seed-1-6-lite-251015",

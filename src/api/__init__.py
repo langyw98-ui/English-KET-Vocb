@@ -1,1 +1,1 @@
-# FastAPI backend package for KET Partner
+# Package marker for api

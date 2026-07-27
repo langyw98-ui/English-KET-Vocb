@@ -77,7 +77,7 @@ async def main():
         if agent_instance is not None:
             try:
                 await agent_instance.aclose()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"agent.aclose() failed during shutdown: {e}")
         await db.close()
         chat_logger.close_session()

@@ -2,7 +2,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_naturalness import NaturalnessResult, _SYSTEM, check_naturalness
+from flow.ket_partner.sentence_naturalness import (
+    _SYSTEM,
+    NaturalnessResult,
+    check_naturalness,
+)
 
 
 def _make_llm(return_value: NaturalnessResult):
