@@ -1,24 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { defineComponent, h } from 'vue'
-
-const ChatPlaceholder = defineComponent({
-  name: 'ChatViewPlaceholder',
-  render() {
-    return h('div', 'Chat View Placeholder')
-  }
-})
-
-const ReportPlaceholder = defineComponent({
-  name: 'ReportViewPlaceholder',
-  render() {
-    return h('div', 'Report View Placeholder')
-  }
-})
+import ChatView from './views/ChatView.vue'
+import ReportView from './views/ReportView.vue'
 
 const routes = [
   { path: '/', redirect: '/chat' },
-  { path: '/chat', component: ChatPlaceholder },
-  { path: '/report', component: ReportPlaceholder },
+  { path: '/chat', component: ChatView },
+  { path: '/report', component: ReportView },
 ]
 
 export const router = createRouter({
