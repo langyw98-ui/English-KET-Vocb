@@ -1,11 +1,37 @@
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from langchain_core.messages import AnyMessage
 
+KetIntent = Literal["translate", "asks_meaning", "idk", "off_topic", "non_compliant"]
+
 
 class BTPKetState(TypedDict):
+    """
+    BTP Ket Partner 核心对话状态图
+
+    字段 Single-Writer 声明：
+    - messages: 仅 agent_node 与用户交互层写入追加；其他节点只读
+    - intent: 仅 classify_input_node 在路由阶段写入；其他节点只读
+    - asked_word: 仅 classify_input_node 在解析查词意图时写入；其他节点只读
+    - wrong_words: 仅 evaluate_translation_node 写入；其他节点只读
+    - sentence_translation: 仅 evaluate_translation_node 与 lookup_target_meaning_node 写入；其他节点只读
+    - overall_correct: 仅 evaluate_translation_node 写入；其他节点只读
+    - asked_word_meaning: 仅 lookup_target_meaning_node 写入；其他节点只读
+    - target_word: 仅 select_vocab_node 写入；其他节点只读
+    - target_context: 仅 select_vocab_node 写入；其他节点只读
+    - last_target_word: 仅 persist_turn_node 在轮次结束时写入；其他节点只读
+    - last_target_context: 仅 persist_turn_node 在轮次结束时写入；其他节点只读
+    - last_sentence_words: 仅 generate_sentence_node 写入；其他节点只读
+    - topic: 仅 select_vocab_node 写入；其他节点只读
+    - profile_strategy: 仅 profile_summarizer_node 写入；其他节点只读
+    - profile_weakness: 仅 profile_summarizer_node 写入；其他节点只读
+    - last_english_sentence: 仅 generate_sentence_node 写入；其他节点只读
+    - _exposure_recorded: 仅 generate_sentence_node 标记与 persist_turn_node 读取；其他节点只读
+    - non_ket_annotations: 仅 generate_sentence_node 写入；其他节点只读
+    """
+
     messages: list[AnyMessage]
-    intent: str | None
+    intent: KetIntent | None
     asked_word: str | None
     # Unified list of words the kid mistranslated. Populated by
     # evaluate_translation_node. Filtered to words that appear in the
