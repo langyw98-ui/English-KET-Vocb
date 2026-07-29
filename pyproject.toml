@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+filterwarnings = ["error::pytest.PytestUnknownMarkWarning"]
+markers = [
+    "integration: marks tests that hit real external services (deselect with '-m \"not integration\"')",
+]

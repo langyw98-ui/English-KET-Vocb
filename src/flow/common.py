@@ -1,15 +1,13 @@
 from logging import getLogger
 from os import environ
+from pathlib import Path
 
+import yaml
+from dotenv import load_dotenv
 from httpx import AsyncClient
 from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 from pydantic import SecretStr
-
-import yaml
-from pathlib import Path
-
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -53,8 +51,8 @@ def _resolve_dashscope_api_key() -> str:
                 for k, v in data.items():
                     if "api_key" in str(k).lower() and isinstance(v, str) and v.strip():
                         return v.strip()
-        except Exception as e:
-            logger.warning(f"Failed to load API key from {pet_config}: {e}")
+        except (yaml.YAMLError, OSError) as e:
+            logger.warning(f"Failed to load API key from {pet_config}: {e}", exc_info=True)
 
     return ""
 
