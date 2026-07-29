@@ -9,7 +9,6 @@ if src_dir not in sys.path:
 
 import uvicorn
 
-from src.api.app import app
 from src.api.settings import Settings
 
 if __name__ == "__main__":

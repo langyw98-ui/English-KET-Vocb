@@ -10,15 +10,15 @@ from inspect import currentframe
 from os.path import dirname, realpath
 from typing import Literal, TypedDict, cast
 
-from langchain.chat_models import BaseChatModel
-from langchain.messages import (
+from langchain.tools import tool
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import (
     AIMessage,
     AnyMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain.tools import tool
 from langgraph.graph import (
     END,
     START,

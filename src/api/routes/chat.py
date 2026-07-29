@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Final
+from typing import Any, Final
 
 import aiosqlite
 import openai
@@ -26,7 +26,7 @@ async def chat(
     req: ChatRequest,
     user: User = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db),
-    agent: CompiledStateGraph = Depends(get_agent),
+    agent: CompiledStateGraph[Any, None, Any, Any] = Depends(get_agent),
     settings: Settings = Depends(get_settings),
     llm_key_status: LlmKeyStatus = Depends(get_llm_key_status),
 ) -> ChatResponse:

@@ -1,4 +1,4 @@
-from langchain.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from flow.common import logger
 from flow.ket_partner.multi_word_target import find_placeholder, has_placeholder

@@ -2,7 +2,7 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain.messages import HumanMessage
+from langchain_core.messages import HumanMessage
 
 from flow.ket_partner.agent import build_agent
 from flow.ket_partner.db import Repos, init_db

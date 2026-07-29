@@ -1,8 +1,9 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 import openai
 import pytest
 from httpx import AsyncClient
-from unittest.mock import AsyncMock
 
 from src.api.llm_key import LlmKeyStatus
 
@@ -24,12 +25,13 @@ async def test_chat_401_on_auth_error(
 ) -> None:
     monkeypatch.setattr("src.api.routes.chat._read_current_key", lambda: "sk-test")
     mock_agent.ainvoke.side_effect = openai.AuthenticationError(
-        message="invalid key", response=AsyncMock(), body=None
+        message="invalid key", response=MagicMock(), body=None
     )
     res = await client.post("/api/chat", json={"text": "Hello"})
     assert res.status_code == 401
     assert llm_key_status.last_error == "API key 无效或无权限"
     assert llm_key_status.state == "red"
+    mock_agent.ainvoke.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -38,11 +40,12 @@ async def test_chat_401_on_bad_request(
 ) -> None:
     monkeypatch.setattr("src.api.routes.chat._read_current_key", lambda: "sk-test")
     mock_agent.ainvoke.side_effect = openai.BadRequestError(
-        message="bad format key", response=AsyncMock(), body=None
+        message="bad format key", response=MagicMock(), body=None
     )
     res = await client.post("/api/chat", json={"text": "Hello"})
     assert res.status_code == 401
     assert llm_key_status.last_error == "API key 无效或无权限"
+    mock_agent.ainvoke.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -71,6 +74,7 @@ async def test_chat_504_on_timeout(
     res = await client.post("/api/chat", json={"text": "Hello"})
     assert res.status_code == 504
     assert llm_key_status.last_error is None
+    mock_agent.ainvoke.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -78,10 +82,11 @@ async def test_chat_504_on_sdk_timeout(
     client: AsyncClient, mock_agent: AsyncMock, llm_key_status: LlmKeyStatus, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("src.api.routes.chat._read_current_key", lambda: "sk-test")
-    mock_agent.ainvoke.side_effect = openai.APITimeoutError(request=AsyncMock())
+    mock_agent.ainvoke.side_effect = openai.APITimeoutError(request=MagicMock())
     res = await client.post("/api/chat", json={"text": "Hello"})
     assert res.status_code == 504
     assert llm_key_status.last_error is None
+    mock_agent.ainvoke.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -93,3 +98,4 @@ async def test_chat_500_on_code_bug(
     res = await client.post("/api/chat", json={"text": "Hello"})
     assert res.status_code == 500
     assert llm_key_status.last_error is None
+    mock_agent.ainvoke.assert_awaited()

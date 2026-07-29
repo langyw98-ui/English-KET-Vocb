@@ -2,7 +2,7 @@ import asyncio
 import os
 from os.path import dirname, join
 
-from langchain.messages import HumanMessage
+from langchain_core.messages import HumanMessage
 
 from flow.common import llm_flash, llm_max, logger
 from flow.ket_partner.agent import build_agent

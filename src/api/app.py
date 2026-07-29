@@ -24,8 +24,13 @@ DEFAULT_CSV = os.path.join(
 )
 
 
+from typing import AsyncGenerator
+
+from fastapi.responses import HTMLResponse
+
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     db_path = os.environ.get("DB_PATH")
     if db_path:
         settings = Settings(DB_PATH=db_path)
@@ -79,9 +84,9 @@ app = FastAPI(docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 @app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html():
+async def custom_swagger_ui_html() -> HTMLResponse:
     return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
+        openapi_url=app.openapi_url or "/openapi.json",
         title=app.title + " - Swagger UI",
         swagger_js_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js",
         swagger_css_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css",
@@ -89,7 +94,7 @@ async def custom_swagger_ui_html():
 
 
 @app.exception_handler(Exception)
-async def unhandled(request: Request, exc: Exception):
+async def unhandled(request: Request, exc: Exception) -> JSONResponse:
     logger.exception(f"unhandled error on {request.url}: {exc}")
     return JSONResponse(status_code=500, content={"detail": "internal error"})
 
@@ -105,7 +110,7 @@ if Path("web/dist").exists():
     from fastapi.staticfiles import StaticFiles
 
     @app.get("/")
-    async def index():
+    async def index() -> FileResponse:
         return FileResponse("web/dist/index.html")
 
     app.mount("/", StaticFiles(directory="web/dist", html=True), name="static")

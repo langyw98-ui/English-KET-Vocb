@@ -1,8 +1,11 @@
-import pytest
-from httpx import ASGITransport, AsyncClient
+from pathlib import Path
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock
 
+import pytest
+from httpx import ASGITransport, AsyncClient
 from langgraph.graph.state import CompiledStateGraph
+
 from src.api.app import app
 from src.api.deps import get_agent
 from src.api.llm_key import LlmKeyStatus
@@ -21,7 +24,7 @@ def llm_key_status() -> LlmKeyStatus:
 
 
 @pytest.fixture
-async def client(mock_agent: AsyncMock, llm_key_status: LlmKeyStatus, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+async def client(mock_agent: AsyncMock, llm_key_status: LlmKeyStatus, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient, None]:
     db_file = str(tmp_path / "test_chat_route.db")
     monkeypatch.setenv("DB_PATH", db_file)
 

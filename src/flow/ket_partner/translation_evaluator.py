@@ -1,6 +1,6 @@
 import json
 
-from langchain.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from flow.common import logger

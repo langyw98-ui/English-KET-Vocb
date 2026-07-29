@@ -1,4 +1,4 @@
-from langchain.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from flow.common import logger

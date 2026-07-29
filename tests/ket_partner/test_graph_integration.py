@@ -3,7 +3,7 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import StateGraph
 
 from flow.ket_partner.agent import KETPartnerAgent, build_agent

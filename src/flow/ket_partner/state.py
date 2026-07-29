@@ -1,6 +1,6 @@
 from typing import TypedDict
 
-from langchain.messages import AnyMessage
+from langchain_core.messages import AnyMessage
 
 
 class BTPKetState(TypedDict):

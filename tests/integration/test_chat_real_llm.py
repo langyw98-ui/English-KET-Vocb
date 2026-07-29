@@ -1,6 +1,9 @@
 import os
+from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+
 from src.api.app import app
 
 
@@ -10,7 +13,7 @@ from src.api.app import app
     not os.environ.get("DASHSCOPE_API_KEY"),
     reason="requires DASHSCOPE_API_KEY"
 )
-async def test_chat_succeeds_with_real_key(tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_chat_succeeds_with_real_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_file = str(tmp_path / "test_chat_real.db")
     monkeypatch.setenv("DB_PATH", db_file)
 

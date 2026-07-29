@@ -1,6 +1,8 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 filterwarnings = ["error::pytest.PytestUnknownMarkWarning"]
+asyncio_mode = "auto"
 markers = [
+    "asyncio: mark test as async",
     "integration: marks tests that hit real external services (deselect with '-m \"not integration\"')",
 ]

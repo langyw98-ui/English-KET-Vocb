@@ -1,10 +1,14 @@
+from pathlib import Path
+from typing import AsyncGenerator
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+
 from src.api.app import app
 
 
 @pytest.fixture
-async def client(tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+async def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient, None]:
     db_file = str(tmp_path / "test_integration.db")
     monkeypatch.setenv("DB_PATH", db_file)
 

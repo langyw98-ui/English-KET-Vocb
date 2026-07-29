@@ -1,6 +1,6 @@
 import re
 
-from langchain.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from flow.common import logger
@@ -41,7 +41,7 @@ async def lookup_word_meaning(
     word_line = f"单词：{word}"
     if context:
         word_line += f"（in the sense of {context}）"
-    
+
     content_parts = []
     if sentence and word.lower() in sentence.lower():
         content_parts.append(f"句子：{sentence}")

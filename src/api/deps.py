@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 import aiosqlite
 from fastapi import HTTPException, Request
@@ -16,15 +16,15 @@ class User(BaseModel):
 
 
 async def get_settings(request: Request) -> Settings:
-    return request.app.state.settings
+    return cast(Settings, request.app.state.settings)
 
 
 async def get_db(request: Request) -> aiosqlite.Connection:
-    return request.app.state.db
+    return cast(aiosqlite.Connection, request.app.state.db)
 
 
-async def get_agent(request: Request) -> CompiledStateGraph:
-    return request.app.state.agent
+async def get_agent(request: Request) -> CompiledStateGraph[Any, None, Any, Any]:
+    return cast(CompiledStateGraph[Any, None, Any, Any], request.app.state.agent)
 
 
 async def get_current_user(request: Request) -> User:

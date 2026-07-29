@@ -1,6 +1,6 @@
 import asyncio
 
-from langchain.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph

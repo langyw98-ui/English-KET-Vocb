@@ -59,11 +59,11 @@ def _resolve_dashscope_api_key() -> str:
 
 dashscope_api_key = _resolve_dashscope_api_key()
 llm_plus = ChatOpenAI(
-    api_key=SecretStr(dashscope_api_key),
+    api_key=SecretStr(dashscope_api_key or "placeholder"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     model="qwen3.6-plus",
     client=AsyncOpenAI(
-        api_key=dashscope_api_key,
+        api_key=dashscope_api_key or "placeholder",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         http_client=AsyncClient(),
     ),
@@ -72,11 +72,11 @@ llm_plus = ChatOpenAI(
 )
 
 llm_max = ChatOpenAI(
-    api_key=SecretStr(dashscope_api_key),
+    api_key=SecretStr(dashscope_api_key or "placeholder"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     model="qwen3.6-max-preview",
     client=AsyncOpenAI(
-        api_key=dashscope_api_key,
+        api_key=dashscope_api_key or "placeholder",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         http_client=AsyncClient(),
     ),
@@ -85,11 +85,11 @@ llm_max = ChatOpenAI(
 )
 
 llm_flash = ChatOpenAI(
-    api_key=SecretStr(dashscope_api_key),
+    api_key=SecretStr(dashscope_api_key or "placeholder"),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     model="qwen3.6-flash",
     client=AsyncOpenAI(
-        api_key=dashscope_api_key,
+        api_key=dashscope_api_key or "placeholder",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         http_client=AsyncClient(),
     ),
@@ -100,14 +100,14 @@ llm_flash = ChatOpenAI(
 
 doubao_api = environ.get("DOUBAO_API_KEY", "")
 llm_doubao = ChatOpenAI(
-    api_key=SecretStr(doubao_api),
+    api_key=SecretStr(doubao_api or "placeholder"),
     base_url="https://ark.cn-beijing.volces.com/api/v3",
     # model="doubao-seed-1-6-251015",
     # model="doubao-seed-1-6-lite-251015",
     model="doubao-seed-1-6-flash-250828",
     # async_client=AsyncClient(),
     client=AsyncOpenAI(
-        api_key=doubao_api,
+        api_key=doubao_api or "placeholder",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         http_client=AsyncClient(),
     ),
