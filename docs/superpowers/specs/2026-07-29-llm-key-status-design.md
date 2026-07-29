@@ -122,13 +122,17 @@ class LlmKeyStatus:
     last_error: str | None = None
     last_error_updated_at: float | None = None
 
-    def set_error(self, error: str) -> None:
-        self.last_error = error
-        self.last_error_updated_at = time.time()
+    def set_error(self, error: str, timestamp: float | None = None) -> None:
+        ts = timestamp or time.time()
+        if self.last_error_updated_at is None or ts >= self.last_error_updated_at:
+            self.last_error = error
+            self.last_error_updated_at = ts
 
-    def clear_error(self) -> None:
-        self.last_error = None
-        self.last_error_updated_at = time.time()
+    def clear_error(self, timestamp: float | None = None) -> None:
+        ts = timestamp or time.time()
+        if self.last_error_updated_at is None or ts >= self.last_error_updated_at:
+            self.last_error = None
+            self.last_error_updated_at = ts
 
     @property
     def state(self) -> Literal["red", "green"]:
@@ -241,6 +245,7 @@ async def chat(
     if not _read_current_key():
         raise HTTPException(status_code=503, detail="LLM key not configured")
 
+    req_start_time = time.time()
     repos = Repos.for_user(db, user.id)
     user_info = {"nickname": user.nickname, "age": user.age}
 
@@ -259,8 +264,9 @@ async def chat(
             ),
             timeout=settings.REQUEST_TIMEOUT,
         )
-    except asyncio.TimeoutError:
-        # 外层 wait_for 超时:临时性问题,与 key 有效性无关,不污染状态
+    except asyncio.TimeoutError as e:
+        # 外层 wait_for 超时:临时性问题,与 key 有效性无关,不污染状态。补全 warning 日志痕迹 (CLAUDE.md §一.3)
+        logger.warning("agent execution timeout: %s", e, exc_info=True)
         raise HTTPException(status_code=504, detail="agent timeout")
     except openai.APITimeoutError as e:
         # SDK 内部超时(早于外层 wait_for 触发),同样视为超时映射到 504,保持文案一致。
@@ -268,8 +274,8 @@ async def chat(
         logger.warning("LLM SDK timeout: %s", e, exc_info=True)
         raise HTTPException(status_code=504, detail="LLM timeout")
     except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
-        # 鉴权失败:key 状态 → 红 (带时间戳更新)
-        llm_key_status.set_error(LLM_AUTH_ERROR_MSG)
+        # 鉴权失败:key 状态 → 红 (带请求发起时间戳校验,防交错覆盖)
+        llm_key_status.set_error(LLM_AUTH_ERROR_MSG, timestamp=req_start_time)
         logger.warning("LLM auth failed: %s", e, exc_info=True)
         raise HTTPException(status_code=401, detail="LLM auth failed")
     except (openai.APIConnectionError, openai.RateLimitError) as e:
@@ -280,8 +286,8 @@ async def chat(
     # 注意:不捕获 KeyError / ValueError / AttributeError 等代码 bug 类异常
     # (CLAUDE.md §一.5)。它们穿透到 app.py 全局 handler 返回 500,被测试捕获。
 
-    # chat 成功:清掉 last_error,状态保持/转绿 (带时间戳更新)
-    llm_key_status.clear_error()
+    # chat 成功:清掉 last_error,状态保持/转绿 (带请求发起时间戳校验,防交错覆盖)
+    llm_key_status.clear_error(timestamp=req_start_time)
 
     messages = result_state.get("messages", [])
     if not messages:
@@ -409,10 +415,9 @@ interface LlmStatus {
 }
 
 export const useLlmKeyStore = defineStore('llmKey', () => {
-  // 默认红。首次 loadStatus 成功后更新为真实状态;
-  // 若 loadStatus 失败(网络/服务异常),维持 red 不抛错(见 loadStatus 实现),
-  // 避免 main.ts 的 top-level await 失败导致整个 app 不 mount。
-  const state = ref<'red' | 'green'>('red')
+  // 默认绿(与后端 lifespan 逻辑一致)。首次 loadStatus 后更新为真实状态;
+  // 避免 app 刚挂载时的首屏闪红 UI (Flash of Red UI)。若 loadStatus 失败维持当前状态。
+  const state = ref<'red' | 'green'>('green')
   const maskedKey = ref<string | null>(null)
   const lastError = ref<string | null>(null)
   const popoverOpen = ref(false)
@@ -620,6 +625,7 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e: unknown) {
       error.value = mapChatError(e)
       messages.value.pop()
+      throw e // 抛出异常供调用方 (ChatView) 捕获并还原 inputText，防止用户输入丢失
     } finally {
       sending.value = false
       // 无论成败,刷新 LLM 状态(chat 成功可能清 last_error → 绿;鉴权失败 → 红)
@@ -1119,7 +1125,7 @@ cd web && npm run build
 7. ✅ chat 错误条无重试按钮
 8. ✅ `flow/common.py:56` 的 `except Exception` 改为 `(yaml.YAMLError, OSError)`,**不含 `UnicodeDecodeError`**(让它穿透暴露配置问题)
 9. ✅ `src/api/app.py` lifespan cleanup 中的两处 `except Exception` 保留不变(spec 显式声明为 §一.1 cleanup safety net 例外)
-10. ✅ `loadStatus` 内部 try/catch,失败时 store 维持初始 red,**main.ts 不会因 `/api/llm/status` 不可达而白屏**
+10. ✅ `loadStatus` 内部 try/catch,失败时 store 维持初始 green(消除首屏闪红 UI),**main.ts 不会因 `/api/llm/status` 不可达而白屏**
 11. ✅ `ruff check` / `mypy --strict` / `pytest` 全部清零
 12. ✅ 前端 `npm run test` 通过(vitest 已安装,测试用例齐备);`npm run build` 验证 ESM 输出(main.ts top-level await 不破坏打包)
 
