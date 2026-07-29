@@ -43,7 +43,7 @@
 [Operator] -- writes --> [env var / ~/.config/pet/config.yaml]
                                   │
                                   ▼  (server startup, run once)
-                   [flow.common: _resolve_dashscope_api_key()]
+                   [src/flow/common.py: _resolve_dashscope_api_key()]
                                   │
                                   ▼  (read once, never written thereafter)
                           [dashscope_api_key (str, module-level)]
@@ -82,7 +82,7 @@
 | `src/api/schemas.py` | 追加 `LlmStatusResponse` | 改动 |
 | `src/api/app.py` | lifespan 初始化 `app.state.llm_key_status`;注册 llm 路由 | 改动 |
 | `src/api/deps.py` | 追加 `get_llm_key_status` 依赖 | 改动 |
-| `flow/common.py` | 修 `except Exception` 违规(§一.1) | 改动 |
+| `src/flow/common.py` | 修 `except Exception` 违规(§一.1) | 改动 |
 
 **前端:**
 
@@ -94,7 +94,7 @@
 | `web/src/App.vue` | navbar 挂载 `<LlmStatusBadge />` | 改动 |
 | `web/src/views/ChatView.vue` | 红态禁用输入 + 警告条 + 错误文案精准映射 | 改动 |
 | `web/src/stores/chat.ts` | `send()` 失败按状态码映射文案;finally 刷新 llmKey 状态 | 改动 |
-| `web/src/main.ts` | mount 前 `await llmKeyStore.loadStatus()` | 改动 |
+| `web/src/main.ts` | 同步 mount + 异步 `llmKeyStore.loadStatus()`(不阻塞渲染) | 改动 |
 | `web/vite.config.ts` | 合并 vitest 配置(`test` block + `/// <reference types="vitest" />`) | 改动 |
 | `web/package.json` | devDependencies 加 `vitest` / `@vue/test-utils` / `jsdom`;scripts 加 `test` / `test:watch` | 改动 |
 
@@ -118,6 +118,9 @@ class LlmKeyStatus:
 
     - last_error & last_error_updated_at: 仅 routes/chat.py 在 chat 鉴权失败或成功时写,
       记录状态变更时间戳以解决并发/交错竞态问题。其他位置只读。
+
+    并发写入语义: guard 用写入时间(completion time, time.time())比较,即"最后完成的那次 chat 胜出",
+    确保成功产出 AI 回复的请求能及时清空错误标记,真实反映系统的最新可用状态。
     """
     last_error: str | None = None
     last_error_updated_at: float | None = None
@@ -144,10 +147,10 @@ class LlmKeyStatus:
 
 
 def _read_current_key() -> str:
-    """从 flow.common 读取已解析的 dashscope key(已 strip)。
+    """从 src/flow/common.py 读取已解析的 dashscope key(已 strip)。
 
-    flow.common.dashscope_api_key 在模块 import 时一次性赋值,之后不变,
-    天然只读(单一写入者 = import 时一次性赋值)。
+    flow.common.dashscope_api_key 在模块 import 时一次性赋值(`str` 类型,空时为 ""),
+    之后不变,天然只读(单一写入者 = import 时一次性赋值)。
 
     返回 strip 后的结果,使所有调用方(state 属性、chat 入口检查、mask_key)
     对空白 key 的判定一致:空字符串与纯空白字符串都视为"未配置"。
@@ -155,7 +158,7 @@ def _read_current_key() -> str:
     注:所有业务与测试代码必须通过此函数读取 key,禁止直接 `from flow.common import dashscope_api_key`,
     防止 Python 模块级 import 导致的快照不可变问题。
     """
-    return (dashscope_api_key or "").strip()
+    return dashscope_api_key.strip()
 
 
 def mask_key(key: str) -> str | None:
@@ -273,10 +276,13 @@ async def chat(
         # 注意:必须在 APIConnectionError 之前捕获,因为 APITimeoutError 是其子类。
         logger.warning("LLM SDK timeout: %s", e, exc_info=True)
         raise HTTPException(status_code=504, detail="LLM timeout")
-    except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
-        # 鉴权失败:key 状态 → 红 (带请求发起时间戳校验,防交错覆盖)
-        llm_key_status.set_error(LLM_AUTH_ERROR_MSG, timestamp=req_start_time)
-        logger.warning("LLM auth failed: %s", e, exc_info=True)
+    except (openai.AuthenticationError, openai.PermissionDeniedError, openai.BadRequestError) as e:
+        # 鉴权 / 权限 / key 格式失败:key 状态 → 红。
+        # BadRequestError 归入此元组(M6):DashScope 在 key 格式错误(缺前缀/含非法字符)时返回 400,
+        # 与 auth fail 同属"key 配置问题",用户视角一致(都应联系管理员)。
+        # timestamp 用完成写入时间 time.time():guard 语义为"最后完成胜出",真实反映系统可用性。
+        llm_key_status.set_error(LLM_AUTH_ERROR_MSG)
+        logger.warning("LLM auth/key failed: %s", e, exc_info=True)
         raise HTTPException(status_code=401, detail="LLM auth failed")
     except (openai.APIConnectionError, openai.RateLimitError) as e:
         # 外部临时失败:不污染状态,返回明确状态码
@@ -286,8 +292,8 @@ async def chat(
     # 注意:不捕获 KeyError / ValueError / AttributeError 等代码 bug 类异常
     # (CLAUDE.md §一.5)。它们穿透到 app.py 全局 handler 返回 500,被测试捕获。
 
-    # chat 成功:清掉 last_error,状态保持/转绿 (带请求发起时间戳校验,防交错覆盖)
-    llm_key_status.clear_error(timestamp=req_start_time)
+    # chat 成功:清掉 last_error,状态保持/转绿 (使用完成写入时间 time.time())
+    llm_key_status.clear_error()
 
     messages = result_state.get("messages", [])
     if not messages:
@@ -320,7 +326,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.db = db
     app.state.agent = agent
-    app.state.llm_key_status = LlmKeyStatus()  # last_error=None → 默认绿(若 key 非空)
+    app.state.llm_key_status = LlmKeyStatus()  # last_error=None → state 由 key 决定(非空则 green)
     yield
     # ... 现有 cleanup ...
 
@@ -348,10 +354,10 @@ async def get_llm_key_status(request: Request) -> LlmKeyStatus:
     return cast(LlmKeyStatus, request.app.state.llm_key_status)
 ```
 
-### `flow/common.py`(改动,仅一处)
+### `src/flow/common.py`(改动,仅一处)
 
 ```python
-# 现状(flow/common.py:56)
+# 现状(src/flow/common.py:56)
 except Exception as e:
     logger.warning(f"Failed to load API key from {pet_config}: {e}")
 
@@ -389,7 +395,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     let detail = text
     try {
       const json = JSON.parse(text)
-      detail = json.detail || text
+      const rawDetail = json.detail ?? text
+      detail = typeof rawDetail === 'string' ? rawDetail : JSON.stringify(rawDetail)
     } catch (e) {
       console.warn('Failed to parse error response JSON', e)
     }
@@ -415,16 +422,27 @@ interface LlmStatus {
 }
 
 export const useLlmKeyStore = defineStore('llmKey', () => {
-  // 默认绿(与后端 lifespan 逻辑一致)。首次 loadStatus 后更新为真实状态;
-  // 避免 app 刚挂载时的首屏闪红 UI (Flash of Red UI)。若 loadStatus 失败维持当前状态。
-  const state = ref<'red' | 'green'>('green')
+  // 默认 red(safe default:状态未知时按"不可用"处理,避免误导用户)。
+  // loadStatus 完成后更新为真实状态;失败时维持 red(网络/服务异常时宁可显示不可用)。
+  const state = ref<'red' | 'green'>('red')
   const maskedKey = ref<string | null>(null)
   const lastError = ref<string | null>(null)
+  // loaded:首次 loadStatus 完成前为 false。
+  // 用途:App.vue 用 v-if="loaded" 控制 LlmStatusBadge 渲染时机,
+  // 避免 badge 在状态未知时显示误导性颜色(default red 会闪一下红 → 真实绿)。
+  // ChatView 不 gated(始终渲染),但其输入框 :disabled 受 state 控制,
+  // 默认 red → 初始禁用直到 loadStatus 完成,防止用户在状态未知时发请求。
+  const loaded = ref(false)
+
+  // popoverOpen 写入者枚举(§三.3 单一写入者契约的弱化形式 —— UI 状态多写入者):
+  // - LlmStatusBadge.togglePopover (本组件点击切换)
+  // - LlmStatusBadge.handleDocumentClick / handleKeydown (outside click / ESC 关闭)
+  // - ChatView 警告条"查看详情"按钮 (openPopover,仅在 state=red 时由 v-if 守卫触发)
   const popoverOpen = ref(false)
 
   async function loadStatus() {
-    // 网络/服务异常时不抛错——store 维持当前状态(首次调用前是初始 red),
-    // 避免 main.ts top-level await 失败导致 app 不 mount(白屏)。
+    // 网络/服务异常时不抛错——store 维持当前状态(默认 red 或上次成功值),
+    // 避免 main.ts 同步 mount 后异步 loadStatus 失败导致视觉错乱。
     // 不静默吞错(§一.3):catch 留 console.warn 痕迹。
     try {
       const res = await api<LlmStatus>('/api/llm/status')
@@ -433,13 +451,15 @@ export const useLlmKeyStore = defineStore('llmKey', () => {
       lastError.value = res.last_error
     } catch (e) {
       console.warn('loadStatus failed, keeping current state', e)
+    } finally {
+      loaded.value = true
     }
   }
 
   function openPopover() { popoverOpen.value = true }
   function closePopover() { popoverOpen.value = false }
 
-  return { state, maskedKey, lastError, popoverOpen, loadStatus, openPopover, closePopover }
+  return { state, maskedKey, lastError, loaded, popoverOpen, loadStatus, openPopover, closePopover }
 })
 ```
 
@@ -573,13 +593,18 @@ outside-click 用 document listener + `badgeRef.contains(target)` 判断,不引�
 navbar `.header-inner` 里,`.nav-tabs` 之后追加:
 
 ```vue
-<LlmStatusBadge />
+<LlmStatusBadge v-if="llmKeyStore.loaded" />
 ```
+
+`v-if="loaded"` 让 badge 在首次 `loadStatus` 完成后才渲染,避免在状态未知时显示误导性颜色(default red 会闪一下红 → 真实绿)。ChatView 不受此 gated(始终渲染,但输入框受 state 控制)。
 
 ```vue
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
 import LlmStatusBadge from './components/LlmStatusBadge.vue'
+import { useLlmKeyStore } from './stores/llmKey'
+
+const llmKeyStore = useLlmKeyStore()
 </script>
 ```
 
@@ -721,7 +746,7 @@ const HTTP_STATUS_ERROR_MAP: Record<number, string> = {
 
 删除原来的 `<button class="retry-btn" @click="handleRetry">重试</button>`,以及对应的 `handleRetry`、`lastSentText`、`.retry-btn` 样式。
 
-**4. script setup:**
+**4. script setup (增加 handleSubmit 异常捕获还原输入框文本):**
 
 ```typescript
 import { ref, onMounted, nextTick, watch } from 'vue'
@@ -730,7 +755,19 @@ import { useLlmKeyStore } from '../stores/llmKey'
 
 const chatStore = useChatStore()
 const llmKeyStore = useLlmKeyStore()
-// ... 删除 lastSentText、handleRetry ...
+const inputText = ref('')
+
+async function handleSubmit() {
+  const text = inputText.value.trim()
+  if (!text || chatStore.sending || llmKeyStore.state === 'red') return
+  inputText.value = ''
+  try {
+    await chatStore.send(text)
+  } catch {
+    // 捕获 send 抛出的异常，恢复用户输入的文本，防止丢失
+    inputText.value = text
+  }
+}
 ```
 
 ### `web/src/main.ts`(改动)
@@ -747,15 +784,19 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 
-// 先同步挂载 app, 避免网络迟滞阻塞 App Shell 渲染与挂载 (防白屏)
+// 同步挂载 app:ChatView 立即可见(输入框默认禁用, 因 store 默认 state=red),
+// 避免 loadStatus 网络迟滞阻塞 App Shell 渲染(防白屏)。
 app.mount('#app')
 
-// 挂载后异步拉取 LLM 状态, loadStatus 内部已被 try/catch 保护
+// 挂载后异步拉取 LLM 状态:
+// - store.loaded 翻 true 后, LlmStatusBadge 才渲染(避免 navbar 显示误导性颜色)
+// - store.state 更新后, ChatView 输入框按真实状态决定是否可用
+// loadStatus 内部 try/catch 保护, 失败时维持 red(安全默认)
 const llmKey = useLlmKeyStore(pinia)
 llmKey.loadStatus()
 ```
 
-同步挂载确保 App Shell 渲染不被网络延迟阻塞。`loadStatus()` 内部受 `try/catch` 保护，即使出错或处于初始状态也不影响应用视图。
+同步挂载确保 ChatView 立即渲染;`LlmStatusBadge` 在 `loaded=true` 后渲染(避免 navbar 在状态未知时显示颜色);ChatView 输入框初始禁用直到 `loadStatus` 完成(防止用户在状态未知时发请求)。
 
 
 ### 前端测试基础设施(本次同步引入)
@@ -867,7 +908,7 @@ export default defineConfig({
 |---|---|---|
 | (任何) | key 为空(读 `dashscope_api_key`) | red |
 | (任何, key 非空) | chat 成功 | green |
-| (任何, key 非空) | chat 鉴权失败(AuthenticationError / PermissionDeniedError) | red |
+| (任何, key 非空) | chat 鉴权失败(AuthenticationError / PermissionDeniedError / BadRequestError) | red |
 | (任何, key 非空) | chat 超时 / 网络错误 / 限流 | 不变 |
 | (任何, key 非空) | chat 其他异常(代码 bug) | 不变(异常穿透) |
 | red(key 为空) | 重启服务 + 配 key | green |
@@ -884,11 +925,12 @@ export default defineConfig({
 | `openai.APITimeoutError` | SDK 内部超时(`APIConnectionError` 子类,早于 wait_for 触发) | 504 | 否 | 是(须早于 `APIConnectionError` 捕获) | 同上 |
 | `openai.AuthenticationError` | LLM 鉴权失败 | 401 | **是** | 是 + warning 日志 | "API key 异常,详情见右上角状态" |
 | `openai.PermissionDeniedError` | LLM 权限不足 | 401 | **是** | 是 + warning 日志 | 同上 |
+| `openai.BadRequestError` | key 格式错误等(DashScope 返回 400) | 401 | **是** | 是 + warning 日志 | 同上(M6:与 auth fail 同语义,都属"key 配置问题") |
 | `openai.APIConnectionError` | 网络问题 | 502 | 否 | 是 | "网络异常,请稍后重新发送" |
 | `openai.RateLimitError` | 限流 | 429 | 否 | 是 | "请求过于频繁,请稍后再试" |
 | `KeyError`/`ValueError`/`AttributeError`/`IndexError` | 代码 bug | 500(全局) | 否 | **否**(穿透,§一.5) | "服务异常,请重新发送" |
 
-**异常元组严格区分外部失败 vs 代码 bug**(CLAUDE.md §一.5):只捕获 openai SDK 的具体外部失败类型 + `asyncio.TimeoutError`;`ValueError` / `TypeError` / `KeyError` / `AttributeError` / `IndexError` 等代码 bug 类异常直接穿透,被全局 handler 返回 500 + 测试捕获。
+**异常元组严格区分外部失败 vs 代码 bug**(CLAUDE.md §一.5):只捕获 openai SDK 的具体外部失败类型 + `asyncio.TimeoutError`;`ValueError` / `TypeError` / `KeyError` / `AttributeError` / `IndexError` 等代码 bug 类异常直接穿透,被全局 handler 返回 500 + 测试捕获。`BadRequestError` 归入鉴权失败元组(M6):虽然 SDK 上是 400,但 DashScope 在 key 格式错误时返回 400,与 auth fail 用户视角一致(都应联系管理员);若未来区分出"非 key 相关的 BadRequestError"(如 langchain 构造的请求体错误),需独立分类。
 
 ### 全局兜底:代码 bug 不会让进程崩溃
 
@@ -957,35 +999,44 @@ FastAPI + uvicorn 基于 async event loop,每个请求在独立 task 中执行�
 | `test_mask_key_boundary_7` | `"abcdefg"`(7 字符) | `"***fg"` |
 | `test_mask_key_strips_whitespace` | `"  sk-abcdefghijklmno  "` | `"sk-a***lmno"` |
 
-**`tests/api/test_llm_key_status.py`**(状态容器):
+**`tests/api/test_llm_key_status.py`**(状态容器 + timestamp guard):
 
 | 测试 | 设置 | 断言 |
 |---|---|---|
 | `test_state_green_when_key_present_and_no_error` | monkeypatch `_read_current_key → "sk-xxx"`,`last_error=None` | `state == "green"` |
 | `test_state_red_when_key_empty` | monkeypatch `_read_current_key → ""` | `state == "red"`(无视 last_error) |
-| `test_state_red_when_key_none` | monkeypatch `_read_current_key → None`(防御性) | `state == "red"` |
 | `test_state_red_when_error_set` | key 非空,`last_error="..."` | `state == "red"` |
 | `test_state_green_after_clear_error` | 设过 last_error 后置 None | `state == "green"` |
 | `test_state_ignores_whitespace_key` | monkeypatch `_read_current_key → "   "` | `state == "red"` |
+| `test_set_error_with_newer_timestamp_overwrites` | 先 `set_error("old", timestamp=100)`,再 `set_error("new", timestamp=200)` | `last_error == "new"`;`last_error_updated_at == 200` |
+| `test_set_error_with_older_timestamp_does_not_overwrite` | 先 `set_error("new", timestamp=200)`,再 `set_error("old", timestamp=100)` | `last_error == "new"`(未覆盖);`last_error_updated_at == 200` |
+| `test_clear_error_with_older_timestamp_does_not_clear` | 先 `set_error("err", timestamp=200)`,再 `clear_error(timestamp=100)` | `last_error == "err"`(未清);`last_error_updated_at == 200` |
+| `test_clear_error_with_newer_timestamp_clears` | 先 `set_error("err", timestamp=100)`,再 `clear_error(timestamp=200)` | `last_error is None`;`last_error_updated_at == 200` |
+| `test_set_error_default_timestamp_uses_time_time` | monkeypatch `time.time` 返回固定值,`set_error("err")`(不传 timestamp) | `last_error_updated_at == <固定值>` |
 
-monkeypatch `_read_current_key`(用 `monkeypatch.setattr("src.api.llm_key._read_current_key", lambda: "...")`),让测试不依赖 `flow.common` 的真实加载结果,hermetic。
+monkeypatch `_read_current_key`(用 `monkeypatch.setattr("src.api.llm_key._read_current_key", lambda: "...")`),让测试不依赖 `src/flow/common.py` 的真实加载结果,hermetic。
+
+timestamp guard 测试覆盖 spec 的核心并发防御机制(§六.1 兜底路径必须测)。
 
 ### 后端路由集成测试
 
-**`tests/api/routes/test_chat.py`**(被测单元 = chat 路由):
+**`tests/api/routes/test_chat_route.py`**(M4 改名,被测单元 = chat 路由):
 
 | 测试 | mock | 断言 |
 |---|---|---|
 | `test_chat_returns_503_when_no_key` | monkeypatch `_read_current_key → ""`,`agent.ainvoke` AsyncMock | 响应 503;`agent.ainvoke.await_count == 0`(§六.4);`llm_key_status.last_error` 未变 |
 | `test_chat_401_on_auth_error` | key 非空,`agent.ainvoke` side_effect=`openai.AuthenticationError(...)` | 响应 401;`llm_key_status.last_error == "API key 无效或无权限"` |
 | `test_chat_401_on_permission_denied` | side_effect=`openai.PermissionDeniedError(...)` | 响应 401;`last_error` 被设 |
-| `test_chat_clears_error_on_success` | 预设 `last_error="..."`,`agent.ainvoke` 正常返回 | 响应 200;`last_error is None` |
+| `test_chat_401_on_bad_request` | side_effect=`openai.BadRequestError(...)`(key 格式错误) | 响应 401;`last_error` 被设(M6) |
+| `test_chat_clears_error_on_success` | 预设 `last_error="..."`,`agent.ainvoke` 正常返回 | 响应 200;`last_error is None`;`agent.ainvoke.assert_awaited`(§六.4) |
 | `test_chat_504_on_timeout` | side_effect=`asyncio.TimeoutError` | 响应 504;`last_error` 未变 |
+| `test_chat_504_on_sdk_timeout` | side_effect=`openai.APITimeoutError(...)` | 响应 504;`last_error` 未变(回归保护:必须在 `APIConnectionError` 之前捕获) |
 | `test_chat_502_on_connection_error` | side_effect=`openai.APIConnectionError(...)` | 响应 502;`last_error` 未变 |
 | `test_chat_429_on_rate_limit` | side_effect=`openai.RateLimitError(...)` | 响应 429;`last_error` 未变 |
 | `test_chat_500_on_code_bug` | side_effect=`KeyError("foo")` | 响应 500(全局 handler);`last_error` 未变;**异常类型穿透未被吞** |
 
 **Mock 纪律**(§六.5 + 本次统一约定):
+- **client fixture 形态**:见 `tests/api/routes/conftest.py`(方案 B:启动 lifespan + override agent + 覆盖 llm_key_status)。lifespan 启动真 DB / 真 Settings / 真 default user,只 mock agent 边界,符合 §六.5"mock 边界,不 mock 业务"。
 - **agent 替换方式**:统一用 `app.dependency_overrides[get_agent] = lambda: mock_agent`(FastAPI 官方推荐),不要 `unittest.mock.patch("src.api.routes.chat.get_agent", ...)`。理由:dependency_overrides 让 mock 生命周期随 fixture,且不污染生产代码模块属性。
 - `mock_agent` 用 `AsyncMock(spec=CompiledStateGraph)`,让 mypy --strict 通过;`agent.ainvoke = AsyncMock(return_value={"messages": [...]})`,每个测试自行 set return_value 或 side_effect。
 - 断言用 `await_count` / `assert_awaited`(AsyncMock),**不能用 `MagicMock`**(无 await 支持,`assert_not_awaited` 不存在)
@@ -1003,32 +1054,48 @@ monkeypatch `_read_current_key`(用 `monkeypatch.setattr("src.api.llm_key._read_
 
 ### 真实 LLM 集成测试(§六.8)
 
-**`tests/integration/test_chat_real_llm.py`:**
+**`tests/integration/test_chat_real_llm.py`**(M1 合并现有 `tests/api/test_chat.py` 的端到端断言 + 本次新增的 last_error 清除断言):
 
 ```python
 import os
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+from src.api.app import app
+
+
+@pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.skipif(
     not os.environ.get("DASHSCOPE_API_KEY"),
     reason="requires DASHSCOPE_API_KEY"
 )
-async def test_chat_succeeds_with_real_key(client, app_state):
-    # 用真实 env key 跑一次 chat
-    response = await client.post("/api/chat", json={"text": "hi"})
-    assert response.status_code == 200
-    # 验证 last_error 被清
-    assert app_state.llm_key_status.last_error is None
+async def test_chat_succeeds_with_real_key(tmp_path, monkeypatch):
+    # 用真实 env key 跑一次 chat;合并原 tests/api/test_chat.py 的端到端断言
+    db_file = str(tmp_path / "test_chat_real.db")
+    monkeypatch.setenv("DB_PATH", db_file)
+
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        response = await ac.post("/api/chat", json={"text": "Hello"})
+        assert response.status_code == 200
+        data = response.json()
+        assert "ai_reply" in data
+        assert "turn_id" in data
+        # 验证 chat 成功后 last_error 被清
+        assert app.state.llm_key_status.last_error is None
 ```
 
-`client` 与 `app_state` fixtures 由 `tests/integration/conftest.py` 提供(详见上文 "Conftest 形态" 段:`httpx.AsyncClient` + `app.state` 引用,启动 lifespan 走真 app)。
+`@pytest.mark.integration` + `skipif` 符合 §六.6 要求。无 key 环境(CI)自动 skip,不阻塞。
 
 鉴权失败路径**不写真实测试**(无法稳定制造 401),靠 mock 覆盖。
 
 ### Conftest 形态与现有测试处置(B2 + B3)
 
-**`tests/api/routes/conftest.py`(新增,最小骨架)**:
+**`tests/api/routes/conftest.py`(新增,方案 B:启动 lifespan + override agent + 覆盖 llm_key_status)**:
+
+chat 路由 5 个 dep(get_agent / get_db / get_settings / get_current_user / get_llm_key_status)。其中 get_db / get_settings / get_current_user 直接或间接读 `app.state.db` / `app.state.settings`,而 `get_current_user` 在 `AUTH_MODE='disabled'` 下要执行真实 SQL 查 default user(`deps.py:31`)。方案 A(全 override)会让 `mock_db` 必须支持 `Repos.for_user` 内部所有 SQL chained 调用,极其脆弱。方案 B 启动 lifespan 让真 DB + 真 default user + 真 Settings 就位,只 override 边界(agent),符合 §六.5"mock 边界,不 mock 业务"。
 
 ```python
 import pytest
@@ -1056,33 +1123,75 @@ def llm_key_status() -> LlmKeyStatus:
 
 
 @pytest.fixture
-async def client(mock_agent, llm_key_status):
-    """跳过 lifespan:手动 set app.state.llm_key_status + dependency_overrides 替 agent。
-    不启动真 DB / 真 agent,避免边界污染(§六.6)。
+async def client(mock_agent, llm_key_status, tmp_path, monkeypatch):
+    """启动 lifespan(真 DB + 真 Settings + 真 default user)+ override agent + 覆盖 llm_key_status。
+
+    - tmp_path + monkeypatch:每个测试用独立 SQLite 文件,hermetic(§六.6)
+    - lifespan_context 启动:init_db 创建表 + 种子 default user;Settings 从 DB_PATH env 读取
+    - dependency_overrides[get_agent]:替换为 mock_agent(被测单元的边界)
+    - 覆盖 app.state.llm_key_status:让 fixture 提供的独立实例生效,避免测试间污染
+
+    cleanup:dependency_overrides.clear() + lifespan 自动 teardown DB。
     """
-    app.state.llm_key_status = llm_key_status
+    db_file = str(tmp_path / "test_chat_route.db")
+    monkeypatch.setenv("DB_PATH", db_file)
+
     app.dependency_overrides[get_agent] = lambda: mock_agent
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-    # cleanup
+
+    async with app.router.lifespan_context(app):
+        # lifespan 已 set app.state.llm_key_status = LlmKeyStatus(),
+        # 立即覆盖为 fixture 提供的独立实例
+        app.state.llm_key_status = llm_key_status
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+
     app.dependency_overrides.clear()
-    if hasattr(app.state, "llm_key_status"):
-        del app.state.llm_key_status
 ```
 
-**`tests/integration/test_chat_real_llm.py` 的 `client` + `app_state` fixtures**:沿用 ASGITransport 模式,但**不 override agent**,改用 `app.router.lifespan_context(app)` 启动真 app(走真 DB + 真 agent)。`app_state` fixture 直接返回 `app.state`,让 integration 测试能访问 `app_state.llm_key_status`。
+**`tests/integration/conftest.py`(新增)**:沿用 lifespan_context 模式,但**不 override agent**(走真 agent + 真 DB)。`app_state` fixture 直接返回 `app.state`,让 integration 测试能访问 `app_state.llm_key_status`。
 
-**现有 `tests/api/test_chat.py` 处置(B3)**:**保留原样不动**。它是真 LLM 集成测试(走 `app.router.lifespan_context` + 真 DB + 真 agent + 真 `DASHSCOPE_API_KEY`),与本次新增的 mock 单元测试互补:
+```python
+import pytest
+from httpx import ASGITransport, AsyncClient
 
-- mock 测试:验证路由层的状态机 / 异常分类逻辑,hermetic
-- 现有 `tests/api/test_chat.py`:验证端到端 chat 跑通(隐式集成测试,有 key 才通过)
+from src.api.app import app
 
-未来若需要让 CI 在无 key 环境下不失败,可独立 PR 加 `@pytest.mark.integration` + skipif。**本次 spec 不变更**此文件。
+
+@pytest.fixture
+async def client(tmp_path, monkeypatch):
+    """启动真 lifespan(真 DB + 真 agent),不 override 任何 dep。"""
+    db_file = str(tmp_path / "test_integration.db")
+    monkeypatch.setenv("DB_PATH", db_file)
+
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        yield ac
+
+
+@pytest.fixture
+def app_state():
+    """让测试能访问 app.state.llm_key_status 等运行时状态。"""
+    return app.state
+```
+
+**现有 `tests/api/test_chat.py` 处置(B3,M1 方案 W)**:**删除,断言合并到 `tests/integration/test_chat_real_llm.py`**。
+
+理由(§六.3 同一被测单元放同一文件 + §六.6 integration 必须标 + skipif):
+- 现有 `tests/api/test_chat.py` 是真 LLM 端到端测试(走 lifespan + 真 DB + 真 agent + 真 `DASHSCOPE_API_KEY`),验 status_code=200 + 字段存在
+- spec 新增 `tests/integration/test_chat_real_llm.py` 是真 LLM 测试,验 chat 成功后 `last_error` 被清
+- 两者 purpose 高度重叠(都跑真 LLM 调用),保留两个 = CI 跑两次真 LLM,慢且消耗 key 配额
+- 合并为单一测试同时覆盖两组断言;同时 `tests/api/test_chat.py` 缺 `@pytest.mark.integration` + skipif,违反 §六.6,合并后顺手修复
+
+合并后形态详见下方"真实 LLM 集成测试"段落。
 
 ### pytest 配置(§六.7)
 
-`pyproject.toml`(或 `pytest.ini`)必须有:
+项目根目录当前**没有** `pyproject.toml` / `pytest.ini` / `setup.cfg`。本次同步新建 `pyproject.toml`(现代 Python 项目标准载体;未来 ruff/mypy 配置可追加到同一文件,本次只填 pytest 段):
+
+**`pyproject.toml`**(新增,项目根目录):
 
 ```toml
 [tool.pytest.ini_options]
@@ -1092,17 +1201,24 @@ markers = [
 ]
 ```
 
+`filterwarnings = ["error::pytest.PytestUnknownMarkWarning"]` 把"未注册 mark"作为错误,符合 §六.7。`pytest-asyncio` 配置沿用现有项目约定(已安装,现有 `@pytest.mark.asyncio` 测试能跑)。
+
+ruff/mypy 配置**本次不追加**(独立 PR 处理);当前 Static Checks 命令行显式传文件路径,不读配置也能跑。
+
 ## Static Checks(§九)
 
 每个 task 的 verify pass 必须包含三项全部清零:
 
 ```bash
-ruff check src/api/llm_key.py src/api/routes/llm.py src/api/routes/chat.py src/api/schemas.py src/api/app.py src/api/deps.py flow/common.py
-mypy --strict src/api/llm_key.py src/api/routes/llm.py src/api/routes/chat.py src/api/schemas.py
-pytest tests/api/test_mask_key.py tests/api/test_llm_key_status.py tests/api/routes/test_chat.py tests/api/routes/test_llm_status.py
+# 后端:目录级检查(M7),所有改动文件全部覆盖
+ruff check src/api/ src/flow/common.py
+mypy --strict src/api/ src/flow/common.py
+pytest tests/api/ tests/integration/
 ```
 
-前端(含 main.ts top-level await 的 ESM 输出格式验证):
+`pytest tests/integration/` 包含真 LLM 集成测试,无 `DASHSCOPE_API_KEY` 时自动 skip(§六.6 skipif),不阻塞 CI。
+
+前端:
 
 ```bash
 cd web && npm run test
@@ -1110,31 +1226,35 @@ cd web && npx vue-tsc --noEmit
 cd web && npm run build
 ```
 
-`npm run build` 用以验证 Vite 输出仍为 ESM(top-level await 要求),dist 产出正常。
+`npm run build` 验证 dist 产出正常。
 
 ## Acceptance Criteria
 
 设计完成后,以下条件全部满足才算交付:
 
-1. ✅ 启动时 `DASHSCOPE_API_KEY` 未设 → 前端 badge 显红,ChatView 输入禁用,警告条显示"LLM 不可用,请联系管理员配置 API key"
-2. ✅ 启动时 key 存在且有效 → badge 显绿,chat 正常工作
-3. ✅ 启动时 key 存在但无效 → badge 初显绿(乐观),首次 chat 鉴权失败后变红,popover 显示"API key 无效或无权限"
+1. ✅ 启动时 `DASHSCOPE_API_KEY` 未设 → store 默认 red,ChatView 渲染但输入禁用,警告条显示"LLM 不可用,请联系管理员配置 API key";`loadStatus` 完成后 `LlmStatusBadge` 渲染并显红
+2. ✅ 启动时 key 存在且有效 → `loadStatus` 完成后 badge 显绿,ChatView 输入可用,chat 正常工作
+3. ✅ 启动时 key 存在但无效 → `loadStatus` 完成后 badge 显绿(后端 `last_error=None` 即乐观绿),首次 chat 鉴权失败后变红,popover 显示"API key 无效或无权限"
 4. ✅ 点 badge 能展开 popover,显示状态 + masked_key(或"未配置")+ 错误原因(如有)
 5. ✅ outside click 与 ESC 都能关闭 popover;点击 badge 自身不关闭(@click.stop 回归保护)
 6. ✅ chat 错误条按状态码显示对应文案(503 / 401 / 504 / 502 / 429 / 500);`openai.APITimeoutError` 与 `asyncio.TimeoutError` 都映射到 504
 7. ✅ chat 错误条无重试按钮
-8. ✅ `flow/common.py:56` 的 `except Exception` 改为 `(yaml.YAMLError, OSError)`,**不含 `UnicodeDecodeError`**(让它穿透暴露配置问题)
+8. ✅ `src/flow/common.py:56` 的 `except Exception` 改为 `(yaml.YAMLError, OSError)`,**不含 `UnicodeDecodeError`**(让它穿透暴露配置问题)
 9. ✅ `src/api/app.py` lifespan cleanup 中的两处 `except Exception` 保留不变(spec 显式声明为 §一.1 cleanup safety net 例外)
-10. ✅ `loadStatus` 内部 try/catch,失败时 store 维持初始 green(消除首屏闪红 UI),**main.ts 不会因 `/api/llm/status` 不可达而白屏**
+10. ✅ `loadStatus` 内部 try/catch,失败时 store 维持 red(安全默认);store `loaded` flag 控制 `LlmStatusBadge` 渲染时机(避免 navbar 显示误导性颜色);**main.ts 不会因 `/api/llm/status` 不可达而白屏**
 11. ✅ `ruff check` / `mypy --strict` / `pytest` 全部清零
-12. ✅ 前端 `npm run test` 通过(vitest 已安装,测试用例齐备);`npm run build` 验证 ESM 输出(main.ts top-level await 不破坏打包)
+12. ✅ 前端 `npm run test` 通过(vitest 已安装,测试用例齐备);`npm run build` 验证 dist 产出正常
+13. ✅ `openai.BadRequestError`(key 格式错误)归入鉴权失败元组,与 `AuthenticationError` / `PermissionDeniedError` 同样映射到 401 + red 状态
+14. ✅ timestamp guard 测试覆盖:`set_error` / `clear_error` 在 older timestamp 下不覆盖、newer timestamp 下覆盖
+15. ✅ 项目根目录新建 `pyproject.toml`,只含 `[tool.pytest.ini_options]` 段(filterwarnings + markers)
 
 ## Out of Scope(未来可扩展)
 
 - **多 worker 部署的状态共享**:需要 redis 或共享存储;当前 `main.py` 默认单进程
-- **单 worker 内多并发 chat 的 last_error 写入语义**:`last_error` 反映"最后**完成**的那次 chat"的结果,而非"最后**发起**的那次"。当前 `AUTH_MODE='disabled'` + 前端 `sending` 锁使单用户不会并发 chat,但 JWT 模式或多 tab 浏览器场景下会出现写入交叉。视为已知限制。
+- **单 worker 内多并发 chat 的 last_error 写入语义**:`last_error` 反映"最后**完成**的那次 chat"的结果(`set_error` / `clear_error` 采用写入时刻 `time.time()` 进行 timestamp 比较),确保成功产生 AI 回复的请求能及时清空错误标记,反向纠正历史错误。
+- **启动时的乐观绿 (Optimistic Green) 取舍**:系统在启动且 key 非空时默认 `last_error=None`(显绿),直到首次 chat 触发鉴权失败变红。未引入启动独立 HTTP 校验探针是遵循 YAGNI 原则,视为已知行为。
 - **AUTH_MODE="jwt" 多用户场景**:每个用户独立 key 状态,需要 session/cookie(本设计文档前面讨论过 D 方案,因当前不满足前置条件而排除)。**届时引入 JWT 时需同步区分 user auth 401 与 llm auth 401**(例如改用 419 或响应体加 `error_code` 字段),否则 `mapChatError` 的 `401 → "API key 异常"` 文案会与用户登录失效撞码
-- **`flow/common.py` ChatOpenAI 重复构造代码的工厂抽取**:与本次需求无强绑定,独立 PR
+- **`src/flow/common.py` ChatOpenAI 重复构造代码的工厂抽取**:与本次需求无强绑定,独立 PR
 - **轮询或 SSE 实时状态推送**:当前 init + chat 后刷新已足够
 - **masked_key 之外的状态详情**(如最近验证时间、启动以来 chat 成功次数):本设计文档前面讨论过 C 选项,被排除
 
@@ -1149,7 +1269,7 @@ src/api/
 ├─ app.py                        [改动:lifespan + router]
 └─ deps.py                       [改动:加 get_llm_key_status]
 
-flow/common.py                   [改动:except Exception 修复]
+src/flow/common.py               [改动:except Exception 修复]
 
 web/src/
 ├─ api/client.ts                 [改动:ApiError 类]
@@ -1161,8 +1281,8 @@ web/src/
 ├─ stores/__tests__/
 │  └─ chat.spec.ts               [新增]
 ├─ views/ChatView.vue            [改动:禁用 + 警告条 + 去重试]
-├─ App.vue                       [改动:挂载 badge]
-└─ main.ts                       [改动:await loadStatus]
+├─ App.vue                       [改动:挂载 badge + v-if loaded]
+└─ main.ts                       [改动:同步 mount + 异步 loadStatus]
 
 web/
 ├─ package.json                  [改动:devDeps + scripts]
@@ -1172,11 +1292,15 @@ tests/api/
 ├─ test_mask_key.py              [新增]
 ├─ test_llm_key_status.py        [新增]
 └─ routes/
-   ├─ conftest.py                [新增:client + mock_agent + llm_key_status fixtures]
-   ├─ test_chat.py               [新增]
+   ├─ conftest.py                [新增:client(方案 B)+ mock_agent + llm_key_status fixtures]
+   ├─ test_chat_route.py         [新增:M4 改名,避免与历史 tests/api/test_chat.py 重名]
    └─ test_llm_status.py         [新增]
 
 tests/integration/
 ├─ conftest.py                   [新增:client + app_state fixtures,启动 lifespan]
-└─ test_chat_real_llm.py         [新增]
+└─ test_chat_real_llm.py         [新增:合并原 tests/api/test_chat.py 的端到端断言]
+
+pyproject.toml                   [新增:pytest 配置载体,§六.7]
 ```
+
+**删除文件**:`tests/api/test_chat.py`(M1 方案 W,合并到 `tests/integration/test_chat_real_llm.py`)。
