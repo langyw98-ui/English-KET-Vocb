@@ -126,6 +126,9 @@ async def evaluate_translation(
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"evaluate_translation failed: {e}; defaulting to no wrong words")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(
+            f"evaluate_translation failed: {e}; defaulting to no wrong words",
+            exc_info=True,
+        )
         return TranslationEval(correct_translation="", wrong_words=[])

@@ -123,8 +123,10 @@ async def generate_sentence(
         response = await creative.ainvoke(messages)
         logger.debug(f"generate_sentence: {response.content.strip()}")
         return response.content.strip()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"generate_sentence failed (using fallback template): {e}")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(
+            f"generate_sentence failed (using fallback template): {e}", exc_info=True
+        )
         import random
         templates = [
             f"I see a {target}.",

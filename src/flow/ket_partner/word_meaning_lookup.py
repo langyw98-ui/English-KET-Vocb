@@ -69,8 +69,8 @@ async def lookup_word_meaning(
                 )
                 return WordMeaning(meaning=f"({word} 词义查询失败)")
         return result
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"lookup_word_meaning failed: {e}")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(f"lookup_word_meaning failed: {e}", exc_info=True)
         return WordMeaning(meaning=f"({word} 词义查询失败)")
 
 
@@ -110,8 +110,8 @@ async def lookup_word_meanings(llm, sentence: str, words: list[str]) -> list[dic
         by_word = {m.word: m.meaning for m in result.meanings}
         # Preserve input order; fall back to "" if LLM dropped a word.
         return [{"word": w, "meaning": by_word.get(w, "")} for w in words]
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"lookup_word_meanings failed: {e}")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(f"lookup_word_meanings failed: {e}", exc_info=True)
         return [{"word": w, "meaning": ""} for w in words]
 
 
@@ -135,6 +135,6 @@ async def lookup_sentence_translation(llm, sentence: str) -> SentenceTranslation
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"lookup_sentence_translation failed: {e}")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(f"lookup_sentence_translation failed: {e}", exc_info=True)
         return SentenceTranslation(translation="(翻译失败)")

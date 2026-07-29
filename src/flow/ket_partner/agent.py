@@ -437,8 +437,8 @@ class KETPartnerAgent:
     async def _run_summary_safe(self, repos: Repos) -> None:
         try:
             await run_profile_summary(self.llm_smart, repos)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"background summary failed: {e}")
+        except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+            logger.warning(f"background summary failed: {e}", exc_info=True)
 
     async def aclose(self, timeout: float = 2.0) -> None:
         if not self._bg_tasks:

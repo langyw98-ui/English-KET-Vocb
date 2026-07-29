@@ -30,6 +30,8 @@ async def classify_intent(llm, last_english_sentence: str | None, kid_input: str
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"classify_intent failed: {e}; defaulting to translation")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(
+            f"classify_intent failed: {e}; defaulting to translation", exc_info=True
+        )
         return IntentClassification(intent="translation", asked_word=None)

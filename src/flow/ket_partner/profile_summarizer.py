@@ -37,5 +37,7 @@ async def run_profile_summary(llm, repos: Repos) -> None:
             weakness_words=summary.weakness_words,
             dialogue_strategy=summary.dialogue_strategy,
         )
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"profile summary failed: {e}; keeping old profile")
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(
+            f"profile summary failed: {e}; keeping old profile", exc_info=True
+        )

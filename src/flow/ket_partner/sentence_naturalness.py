@@ -48,8 +48,10 @@ async def check_naturalness(llm, sentence: str, age: int = 8) -> NaturalnessResu
     ]
     try:
         return await structured.ainvoke(messages)
-    except Exception as e:  # noqa: BLE001
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
         # Fail-open: if the judge LLM errors, accept the sentence rather than
         # forcing extra retries (and burning budget) on a non-issue.
-        logger.warning(f"check_naturalness failed: {e}; accepting by default")
+        logger.warning(
+            f"check_naturalness failed: {e}; accepting by default", exc_info=True
+        )
         return NaturalnessResult(ok=True, reason="")
