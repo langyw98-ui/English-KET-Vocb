@@ -8,13 +8,14 @@ import random
 import re
 from inspect import currentframe
 from os.path import dirname, realpath
-from typing import Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 from langchain.tools import tool
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
@@ -515,8 +516,10 @@ class BTPAutonomous:
             return state
 
         # 构建聊天消息，使用原始模型（未绑定工具）
-        chat_messages = [
-            "你是一个智能助手，能够友好地与用户对话。你生成的对话不能包含emoji。"
+        chat_messages: list[BaseMessage] = [
+            SystemMessage(
+                content="你是一个智能助手，能够友好地与用户对话。你生成的对话不能包含emoji。"
+            )
         ]
 
         # 如果存在记忆，将记忆作为动态系统消息插入到对话历史前
@@ -903,7 +906,7 @@ class BTPAutonomous:
             return state
 
         if classification == "list_scenes":
-            categories = {}
+            categories: dict[str, list[str]] = {}
             for s in self.scenes:
                 categories.setdefault(s["category"], []).append(s["name"])
             scene_lines = []
@@ -1189,7 +1192,7 @@ class BTPAutonomous:
                 structured_llm = self.original_model.with_structured_output(
                     ErrorKeyOutput, method="function_calling"
                 )
-                result = await structured_llm.ainvoke(
+                ek_result = await structured_llm.ainvoke(
                     [
                         SystemMessage(
                             content=(
@@ -1214,8 +1217,8 @@ class BTPAutonomous:
                         ),
                     ]
                 )
-                typed = cast(ErrorKeyOutput,result)
-                error_key = typed.error_key
+                if isinstance(ek_result, ErrorKeyOutput):
+                    error_key = ek_result.error_key
             except Exception:
                 pass
 
@@ -1652,7 +1655,7 @@ if __name__ == "__main__":
 
             i += 1
 
-    test_cases = {"人工交互": {}}
+    test_cases: dict[str, dict[str, Any]] = {"人工交互": {}}
     for value in test_cases.values():
         test_case = value
 
