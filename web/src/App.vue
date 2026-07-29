@@ -11,16 +11,19 @@
           </div>
         </div>
 
-        <nav class="nav-tabs" aria-label="Main Navigation">
-          <RouterLink to="/chat" class="nav-tab">
-            <span class="tab-icon">💬</span>
-            <span class="tab-label">对话</span>
-          </RouterLink>
-          <RouterLink to="/report" class="nav-tab">
-            <span class="tab-icon">📊</span>
-            <span class="tab-label">报告</span>
-          </RouterLink>
-        </nav>
+        <div class="header-actions">
+          <nav class="nav-tabs" aria-label="Main Navigation">
+            <RouterLink to="/chat" class="nav-tab">
+              <span class="tab-icon">💬</span>
+              <span class="tab-label">对话</span>
+            </RouterLink>
+            <RouterLink to="/report" class="nav-tab">
+              <span class="tab-icon">📊</span>
+              <span class="tab-label">报告</span>
+            </RouterLink>
+          </nav>
+          <LlmStatusBadge v-if="llmKeyStore.loaded" />
+        </div>
       </div>
     </header>
 
@@ -35,6 +38,10 @@
 
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
+import LlmStatusBadge from './components/LlmStatusBadge.vue'
+import { useLlmKeyStore } from './stores/llmKey'
+
+const llmKeyStore = useLlmKeyStore()
 </script>
 
 <style>
@@ -110,6 +117,12 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
 }
 
 .nav-tabs {

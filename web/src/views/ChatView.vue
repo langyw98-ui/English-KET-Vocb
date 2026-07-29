@@ -11,6 +11,12 @@
       </div>
     </div>
 
+    <!-- LLM Warning Banner -->
+    <div v-if="llmKeyStore.state === 'red'" class="llm-warning">
+      <span>⚠️ LLM 不可用,请联系管理员配置 API key</span>
+      <button class="warning-link" @click="llmKeyStore.openPopover()">查看详情</button>
+    </div>
+
     <!-- Messages Scroll Area -->
     <div ref="messagesContainer" class="messages-list">
       <div v-if="chatStore.messages.length === 0 && !chatStore.sending" class="chat-welcome">
@@ -66,23 +72,22 @@
     <div v-if="chatStore.error" class="error-banner">
       <span class="error-icon">⚠️</span>
       <span class="error-text">{{ chatStore.error }}</span>
-      <button class="retry-btn" @click="handleRetry">重试</button>
     </div>
 
     <!-- Input Form Area -->
-    <form class="input-area" @submit.prevent="handleSend">
+    <form class="input-area" @submit.prevent="handleSubmit">
       <input
         v-model="inputText"
         type="text"
         class="chat-input"
         placeholder="输入英语句子或对话内容..."
-        :disabled="chatStore.sending"
+        :disabled="chatStore.sending || llmKeyStore.state === 'red'"
         ref="inputRef"
       />
       <button
         type="submit"
         class="send-btn"
-        :disabled="!inputText.trim() || chatStore.sending"
+        :disabled="!inputText.trim() || chatStore.sending || llmKeyStore.state === 'red'"
       >
         <span v-if="!chatStore.sending">发送 &rarr;</span>
         <span v-else class="btn-spinner"></span>
@@ -94,10 +99,11 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
+import { useLlmKeyStore } from '../stores/llmKey'
 
 const chatStore = useChatStore()
+const llmKeyStore = useLlmKeyStore()
 const inputText = ref('')
-const lastSentText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLInputElement | null>(null)
 
@@ -125,37 +131,20 @@ function formatTime(iso: string): string {
   }
 }
 
-async function handleSend() {
+async function handleSubmit() {
   const text = inputText.value.trim()
-  if (!text || chatStore.sending) return
-
-  lastSentText.value = text
+  if (!text || chatStore.sending || llmKeyStore.state === 'red') return
   inputText.value = ''
   try {
     await chatStore.send(text)
-  } finally {
-    scrollToBottom()
-    focusInput()
+  } catch {
+    inputText.value = text
   }
 }
 
 async function sendSample(text: string) {
   inputText.value = text
-  await handleSend()
-}
-
-async function handleRetry() {
-  if (lastSentText.value && !chatStore.sending) {
-    try {
-      await chatStore.send(lastSentText.value)
-    } finally {
-      scrollToBottom()
-      focusInput()
-    }
-  } else {
-    chatStore.load()
-    focusInput()
-  }
+  await handleSubmit()
 }
 
 watch(
@@ -225,6 +214,32 @@ onMounted(async () => {
   margin: 0.15rem 0 0 0;
   font-size: 0.85rem;
   color: #64748b;
+}
+
+.llm-warning {
+  background: #fef2f2;
+  border-bottom: 1px solid #fca5a5;
+  padding: 0.65rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: #991b1b;
+}
+
+.warning-link {
+  background: transparent;
+  border: 1px solid #fca5a5;
+  color: #991b1b;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.warning-link:hover {
+  background: #fee2e2;
 }
 
 .messages-list {
@@ -399,21 +414,6 @@ onMounted(async () => {
 
 .error-text {
   flex: 1;
-}
-
-.retry-btn {
-  background: #dc2626;
-  color: #ffffff;
-  border: none;
-  padding: 0.25rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.retry-btn:hover {
-  background: #b91c1c;
 }
 
 .input-area {
