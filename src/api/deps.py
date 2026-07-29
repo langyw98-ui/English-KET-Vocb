@@ -1,8 +1,11 @@
+from typing import cast
+
 import aiosqlite
 from fastapi import HTTPException, Request
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from src.api.llm_key import LlmKeyStatus
 from src.api.settings import Settings
 
 
@@ -37,3 +40,8 @@ async def get_current_user(request: Request) -> User:
         return User(id=row[0], nickname=row[1], age=row[2])
 
     raise NotImplementedError("JWT auth not implemented yet")
+
+
+async def get_llm_key_status(request: Request) -> LlmKeyStatus:
+    return cast(LlmKeyStatus, request.app.state.llm_key_status)
+

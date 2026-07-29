@@ -15,7 +15,8 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from flow.common import llm_flash, llm_max, logger
 from flow.ket_partner.agent import build_agent
 from flow.ket_partner.db import init_db
-from src.api.routes import chat, messages, report
+from src.api.llm_key import LlmKeyStatus
+from src.api.routes import chat, llm, messages, report
 from src.api.settings import Settings
 
 DEFAULT_CSV = os.path.join(
@@ -51,8 +52,10 @@ async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.db = db
         app.state.agent = agent
+        app.state.llm_key_status = LlmKeyStatus()
 
         yield
+
     finally:
         if hasattr(app.state, "agent"):
             inner = getattr(app.state.agent, "agent", None)
@@ -94,6 +97,8 @@ async def unhandled(request: Request, exc: Exception):
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(report.router, prefix="/api/report", tags=["report"])
 app.include_router(messages.router, prefix="/api/messages", tags=["messages"])
+app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
+
 
 if Path("web/dist").exists():
     from fastapi.responses import FileResponse

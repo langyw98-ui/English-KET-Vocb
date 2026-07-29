@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -45,3 +46,10 @@ class MessageOut(BaseModel):
     content: str
     turn_id: int | None = None
     created_at: datetime
+
+
+class LlmStatusResponse(BaseModel):
+    state: Literal["red", "green"]
+    masked_key: str | None
+    last_error: str | None
+
