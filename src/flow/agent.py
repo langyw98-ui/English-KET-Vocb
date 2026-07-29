@@ -1,6 +1,8 @@
 from json import dumps
 from typing import (
+    Any,
     Literal,
+    Sequence,
     TypedDict,
 )
 
@@ -10,6 +12,7 @@ from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
     SystemMessage,
+    ToolCall,
     ToolMessage,
 )
 from langgraph.checkpoint.memory import (
@@ -41,7 +44,7 @@ class Task(BaseModel):
 
 
 def get_tool_call_signature(
-    tool_calls: list[dict],
+    tool_calls: Sequence[ToolCall | dict[str, Any]],
 ) -> str:
     extracted = []
     for tc in tool_calls:
@@ -65,13 +68,13 @@ class Autonomous:
     ):
         self.model = model.bind_tools(tools)
         logger.debug(prompt)
-        self.system_message = [
+        self.system_message: list[AnyMessage] = [
             SystemMessage(content=prompt)
         ]
         self.tools = {
             tool.name: tool for tool in tools
         }
-        self.hools = {}
+        self.hools: dict[str, Any] = {}
 
     async def compile(
         self,
@@ -130,39 +133,39 @@ class Autonomous:
                 latest_human = msg.content
                 break
 
-        for tool_call in current_messages[
-            -1
-        ].tool_calls:
-            # 成语接龙等需要从主图状态读取真实用户输入的工具
-            # 避免主 LLM 在长对话历史中传错参数
-            if (
-                latest_human is not None
-                and tool_call["name"] in self.tools
-                and "user_input" in tool_call.get("args", {})
-            ):
-                tool_call["args"]["user_input"] = latest_human
-                logger.debug(
-                    f"工具 {tool_call['name']} 的 user_input 已覆盖为: {latest_human}"
-                )
+        last_msg = current_messages[-1]
+        if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+            for tool_call in last_msg.tool_calls:
+                # 成语接龙等需要从主图状态读取真实用户输入的工具
+                # 避免主 LLM 在长对话历史中传错参数
+                if (
+                    latest_human is not None
+                    and tool_call["name"] in self.tools
+                    and "user_input" in tool_call.get("args", {})
+                ):
+                    tool_call["args"]["user_input"] = latest_human
+                    logger.debug(
+                        f"工具 {tool_call['name']} 的 user_input 已覆盖为: {latest_human}"
+                    )
 
-            tool = self.tools[tool_call["name"]]
-            observation = await tool.ainvoke(
-                tool_call["args"]
-            )
-            if isinstance(observation, Task):
-                observation = observation.model_dump_json()
-            else:
-                raise Exception(
-                    f"{tool_call['name']} 工具返回值类型不是Task"
+                tool = self.tools[tool_call["name"]]
+                observation = await tool.ainvoke(
+                    tool_call["args"]
                 )
-            current_messages.append(
-                ToolMessage(
-                    content=observation,
-                    tool_call_id=tool_call[
-                        "id"
-                    ],
+                if isinstance(observation, Task):
+                    observation = observation.model_dump_json()
+                else:
+                    raise Exception(
+                        f"{tool_call['name']} 工具返回值类型不是Task"
+                    )
+                current_messages.append(
+                    ToolMessage(
+                        content=observation,
+                        tool_call_id=tool_call[
+                            "id"
+                        ],
+                    )
                 )
-            )
 
         state.update(
             {
@@ -174,7 +177,7 @@ class Autonomous:
 
     async def condition(
         self, state: dict
-    ) -> Literal["tool", END]:
+    ) -> Literal["tool", "__end__"]:
         messages = state["messages"]
         last_message = messages[-1]
 
@@ -184,7 +187,7 @@ class Autonomous:
             )
             or not last_message.tool_calls
         ):
-            return END
+            return "__end__"
 
         current_signature = (
             get_tool_call_signature(
@@ -213,7 +216,7 @@ class Autonomous:
                     logger.warning(
                         f"检测到重复工具调用，强制终止: {current_signature}"
                     )
-                    return END
+                    return "__end__"
 
         return "tool"
 
