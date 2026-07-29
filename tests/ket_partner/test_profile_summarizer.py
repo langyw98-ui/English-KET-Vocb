@@ -32,6 +32,7 @@ async def test_summary_updates_profile(temp_db_path):
         profile = await repos.profile.get()
         assert "cat" in profile["weakness_words"]
         assert "图示" in profile["dialogue_strategy"]
+        llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
     finally:
         await db.close()
 
@@ -50,5 +51,7 @@ async def test_summary_fallback_on_error(temp_db_path):
         profile = await repos.profile.get()
         assert profile["weakness_words"] == ["old"]
         assert profile["dialogue_strategy"] == "old strat"
+        bound.ainvoke.assert_awaited_once()
     finally:
         await db.close()
+

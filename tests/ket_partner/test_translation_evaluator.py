@@ -36,6 +36,7 @@ async def test_evaluate_finds_wrong_word():
     assert result.wrong_words[0].word == "cat"
     assert result.wrong_words[0].correct_translation == "猫"
     assert result.wrong_words[0].kid_translation == "狗"
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -51,6 +52,7 @@ async def test_evaluate_no_wrong_words():
     )
     assert result.wrong_words == []
     assert result.correct_translation == "那只猫很大"
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -68,6 +70,7 @@ async def test_evaluate_fallback_on_error():
     )
     assert result.wrong_words == []
     assert result.correct_translation == ""
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -89,3 +92,5 @@ async def test_evaluate_threads_target_context_into_prompt():
     target_msg = next(m for m in messages if "Target word being tested" in m.content)
     assert "smart" in target_msg.content
     assert "clever" in target_msg.content
+    bound.ainvoke.assert_awaited_once()
+

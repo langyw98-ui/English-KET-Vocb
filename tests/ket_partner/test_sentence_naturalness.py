@@ -23,6 +23,7 @@ async def test_check_naturalness_returns_ok():
     result = await check_naturalness(llm, "The cat sleeps on the bed.")
     assert result.ok is True
     assert result.reason == ""
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -31,6 +32,7 @@ async def test_check_naturalness_returns_reject_with_reason():
     result = await check_naturalness(llm, "The cold ice cream makes my nose move.")
     assert result.ok is False
     assert "nose" in result.reason
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -43,6 +45,8 @@ async def test_check_naturalness_fails_open_on_error():
     # Fail-open: judge LLM errors must NOT force extra retries on a non-issue.
     assert result.ok is True
     assert result.reason == ""
+    bound.ainvoke.assert_awaited_once()
+
 
 
 def test_prompt_covers_three_naturalness_categories():

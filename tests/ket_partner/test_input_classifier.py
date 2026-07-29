@@ -23,6 +23,7 @@ async def test_classify_translation():
     result = await classify_intent(llm, "The cat is big.", "那只猫很大")
     assert result.intent == "translation"
     assert result.asked_word is None
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -31,6 +32,7 @@ async def test_classify_idk():
     llm = _make_llm(expected)
     result = await classify_intent(llm, "The cat is big.", "我不会")
     assert result.intent == "idk"
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -40,6 +42,7 @@ async def test_classify_asks_meaning_extracts_word():
     result = await classify_intent(llm, "The cat is big.", "cat 是什么意思")
     assert result.intent == "asks_meaning"
     assert result.asked_word == "cat"
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -50,3 +53,5 @@ async def test_classify_fallback_on_llm_error():
     llm.with_structured_output = MagicMock(return_value=bound)
     result = await classify_intent(llm, "The cat is big.", "那只猫很大")
     assert result.intent == "translation"
+    bound.ainvoke.assert_awaited_once()
+

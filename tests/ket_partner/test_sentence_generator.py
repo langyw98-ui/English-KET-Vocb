@@ -26,6 +26,7 @@ async def test_generate_sentence_returns_string():
     )
     assert isinstance(result, str)
     assert "cat" in result
+    llm.bind.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -40,6 +41,7 @@ async def test_generate_sentence_handles_empty_recent():
         max_words=12,
     )
     assert "cat" in result
+    llm.bind.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -61,6 +63,7 @@ async def test_generate_sentence_prompt_lists_avoid_sentences():
     system_text = sent_messages[0].content
     assert "The cat runs." in system_text
     assert "The cat jumps." in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -80,6 +83,7 @@ async def test_generate_sentence_prompt_shows_none_yet_when_empty():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "(none yet)" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -102,6 +106,7 @@ async def test_generate_sentence_prompt_lists_avoid_non_ket_words():
     system_text = sent_messages[0].content
     assert "blocks" in system_text
     assert "tower" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -121,6 +126,7 @@ async def test_generate_sentence_prompt_omits_non_ket_block_when_empty():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "non-KET words" not in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -149,6 +155,7 @@ async def test_generate_sentence_prompt_lists_prior_duplicate_attempt():
     system_text = sent_messages[0].content
     assert "The cat runs fast." in system_text
     assert "word-for-word duplicate" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -167,6 +174,7 @@ async def test_generate_sentence_prompt_omits_history_when_no_prior_attempts():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "Your previous attempts" not in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -204,6 +212,7 @@ async def test_generate_sentence_prompt_lists_all_prior_attempts():
     # Both reasons must appear.
     assert "non-KET words" in system_text
     assert "house of bricks sounds odd" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -225,6 +234,7 @@ async def test_generate_sentence_prompt_clarifies_multi_word_target():
     system_text = sent_messages[0].content
     assert "MULTI-WORD" in system_text
     assert "CD player" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -243,6 +253,7 @@ async def test_generate_sentence_prompt_omits_multi_word_note_for_single_word():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "MULTI-WORD" not in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -271,6 +282,7 @@ async def test_generate_sentence_prompt_calls_out_target_split_when_prior_attemp
     system_text = sent_messages[0].content
     assert "SPLIT" in system_text
     assert "CD player" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -289,6 +301,7 @@ async def test_generate_sentence_prompt_omits_target_split_block_when_no_split_h
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "SPLIT" not in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -311,6 +324,7 @@ async def test_generate_sentence_prompt_includes_context_when_provided():
     system_text = sent_messages[0].content
     assert "smart" in system_text
     assert "clever" in system_text
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -329,3 +343,5 @@ async def test_generate_sentence_prompt_omits_context_block_when_empty():
     sent_messages = bound.ainvoke.call_args.args[0]
     system_text = sent_messages[0].content
     assert "specifically in this sense" not in system_text
+    bound.ainvoke.assert_awaited_once()
+

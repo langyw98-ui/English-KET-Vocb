@@ -18,6 +18,7 @@ async def test_lookup_returns_meaning():
     llm = _make_llm(WordMeaning(meaning="猫"))
     result = await lookup_word_meaning(llm, "The cat is big.", "cat")
     assert result.meaning == "猫"
+    llm.with_structured_output.return_value.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -28,6 +29,7 @@ async def test_lookup_fallback_on_error():
     llm.with_structured_output = MagicMock(return_value=bound)
     result = await lookup_word_meaning(llm, "The cat is big.", "cat")
     assert "失败" in result.meaning or result.meaning
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -70,6 +72,7 @@ async def test_lookup_falls_back_when_both_calls_echo_english():
     assert result.meaning.strip().lower() != "sea", (
         f"meaning must not be the bare English echo; got {result.meaning!r}"
     )
+    assert llm.with_structured_output.return_value.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -83,3 +86,5 @@ async def test_lookup_threads_context_into_prompt():
     # context should appear somewhere in the messages list.
     all_content = " ".join(m.content for m in messages)
     assert "clever" in all_content
+    bound.ainvoke.assert_awaited_once()
+
