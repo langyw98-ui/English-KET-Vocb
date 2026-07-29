@@ -607,7 +607,19 @@ async def build_agent(
     → graph.agent = agent (暴露给 shutdown 调 aclose) → 返回 graph。
     删除原 db 参数（函数体内从未使用）。
     """
+
+# === Lifecycle 契约（强制）===
+
+# build_agent 返回前必须执行：
+#     graph.agent = agent
+# 该属性是 composition root（api/app.py::lifespan、cli/ket_partner/main.py::main）
+# 在 shutdown 阶段调用 agent.aclose() 的唯一句柄。LangGraph CompiledStateGraph
+# 允许属性注入；接受这一轻微 wart，避免改动 build_agent 返回签名带来的连锁调整。
 ```
+
+**build_agent 返回值**：`CompiledStateGraph` 实例，**必须**挂载 `.agent` 属性指向构造的 `KETPartnerAgent`。调用方约定：
+- `src/api/app.py::lifespan`：`agent = await build_agent(...)` → `app.state.agent = agent`；shutdown 时 `await agent.agent.aclose()`
+- `src/cli/ket_partner/main.py::main`：`agent = await build_agent(...)`；`finally` 块 `await agent.agent.aclose()`
 
 ### `sentence_orchestration.py` (NEW)
 
@@ -742,6 +754,38 @@ def format_output_text(state: BTPKetState, new_sentence: str) -> str:
 - `state.py`：`BTPKetState` TypedDict + `KetIntent` Literal
 - `config.py`：`KetConfig` Pydantic 模型 + `load_config()`
 - 9 个 LLM 领域模块：`input_classifier` / `sentence_generator` / `sentence_validator` / `sentence_naturalness` / `translation_evaluator` / `word_meaning_lookup` / `vocab_selector` / `multi_word_target` / `profile_summarizer`
+
+> **例外**：`vocab_selector.py` 虽留在 `flow/ket_partner/`，但其 `WordRef` import 必须迁移（见下「WordRef 跨包引用纪律」）。
+
+### WordRef 跨包引用纪律（强制）
+
+`WordRef` 重定位到 `persistence/models.py` 后，`flow/ket_partner/` 内任何把它用作类型注解的文件必须遵守三条：
+
+1. **文件首行**（模块 docstring 之后、其他 import 之前）：`from __future__ import annotations`
+2. **WordRef 仅通过 `TYPE_CHECKING` 块导入**：
+   ```python
+   from typing import TYPE_CHECKING
+   if TYPE_CHECKING:
+       from persistence.models import WordRef
+   ```
+3. **禁止运行时** `from persistence.models import WordRef` 或 `from persistence import WordRef`
+
+**原因**：PEP 563（`from __future__ import annotations`）把所有注解推迟为字符串，运行时不求值；配合 `TYPE_CHECKING` 块，运行时永不加载 `persistence` 模块，从而保证 §2「flow/ket_partner 对 persistence 零运行时依赖」不变量在源码层成立。CLAUDE.md §二.9 也要求 `cast` 字符串前向引用先 import，此处同理。
+
+**受影响文件清单**（grep `WordRef` on src/flow/ket_partner/ 已确认）：
+
+| 文件 | 改造点 |
+|---|---|
+| `flow/ket_partner/persistence.py` (NEW) | Protocol 方法签名引用 `WordRef`；spec §4 已含 `from __future__ import annotations` + `TYPE_CHECKING` 块 |
+| `flow/ket_partner/vocab_selector.py` | 现 `from flow.ket_partner.db import Repos, WordRef` 拆为：`Repos` → `KETPartnerRepos` Protocol（同包内 `from .persistence import KETPartnerRepos`）；`WordRef` → `TYPE_CHECKING` 块。首行补 `from __future__ import annotations` |
+| 其他文件 | 仅注释或字符串提及 `WordRef`，无需改造 |
+
+**验收命令**：
+```bash
+# flow/ket_partner/ 内对 persistence 的 import 必须全部出现在 TYPE_CHECKING 块内
+grep -rn "from persistence" src/flow/ket_partner/
+# 期望：每条命中都紧跟在 "if TYPE_CHECKING:" 之下
+```
 
 ### 迁出文件（从 `flow/ket_partner/` 删除）
 
@@ -1195,3 +1239,6 @@ agent.py 拆分后，原本导入到 agent.py 命名空间的函数会散到 sen
 - [ ] `commands.py::_export_stats` 中无 `init_db` / `repos._db.close()` 调用
 - [ ] `StatsRepo` 公开方法集合不再包含 `_category_where_sql` / `count_by_category` / `list_by_category`
 - [ ] `tests/integration/test_graph_integration.py` 所有 `agent_module.<name>` monkeypatch 已按迁移表替换
+- [ ] `flow/ket_partner/` 内所有引用 `WordRef` 作为类型注解的文件（`persistence.py` / `vocab_selector.py`）首行均有 `from __future__ import annotations`，且 `from persistence.models import WordRef` 仅出现在 `if TYPE_CHECKING:` 块下
+- [ ] `flow/ket_partner/` 内**无任何**运行时 `from persistence...` import（验收命令：`grep -rn "from persistence" src/flow/ket_partner/` 仅命中 TYPE_CHECKING 块下的行）
+- [ ] `build_agent()` 返回的 `CompiledStateGraph` 实例挂载了 `.agent` 属性（指向 `KETPartnerAgent`）；`api/app.py::lifespan` 与 `cli/ket_partner/main.py::main` 均通过 `await <graph>.agent.aclose()` 完成后台任务优雅关闭
