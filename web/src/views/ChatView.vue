@@ -101,6 +101,12 @@ const lastSentText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLInputElement | null>(null)
 
+function focusInput() {
+  nextTick(() => {
+    inputRef.value?.focus()
+  })
+}
+
 function scrollToBottom() {
   nextTick(() => {
     if (messagesContainer.value) {
@@ -125,8 +131,12 @@ async function handleSend() {
 
   lastSentText.value = text
   inputText.value = ''
-  await chatStore.send(text)
-  scrollToBottom()
+  try {
+    await chatStore.send(text)
+  } finally {
+    scrollToBottom()
+    focusInput()
+  }
 }
 
 async function sendSample(text: string) {
@@ -136,12 +146,26 @@ async function sendSample(text: string) {
 
 async function handleRetry() {
   if (lastSentText.value && !chatStore.sending) {
-    await chatStore.send(lastSentText.value)
-    scrollToBottom()
+    try {
+      await chatStore.send(lastSentText.value)
+    } finally {
+      scrollToBottom()
+      focusInput()
+    }
   } else {
     chatStore.load()
+    focusInput()
   }
 }
+
+watch(
+  () => chatStore.sending,
+  (sending) => {
+    if (!sending) {
+      focusInput()
+    }
+  }
+)
 
 watch(
   () => chatStore.messages.length,
@@ -153,7 +177,7 @@ watch(
 onMounted(async () => {
   await chatStore.load()
   scrollToBottom()
-  inputRef.value?.focus()
+  focusInput()
 })
 </script>
 

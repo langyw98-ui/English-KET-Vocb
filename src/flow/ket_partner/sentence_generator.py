@@ -124,5 +124,13 @@ async def generate_sentence(
         logger.debug(f"generate_sentence: {response.content.strip()}")
         return response.content.strip()
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"generate_sentence failed: {e}")
-        return f"I see a {target}."
+        logger.warning(f"generate_sentence failed (using fallback template): {e}")
+        import random
+        templates = [
+            f"I see a {target}.",
+            f"The {target} is very nice.",
+            f"Look at the {target} over there.",
+            f"I like the {target}.",
+            f"This is a good {target}.",
+        ]
+        return random.choice(templates)

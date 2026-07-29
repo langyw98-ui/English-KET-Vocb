@@ -1,6 +1,12 @@
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# 确保 src 目录在 sys.path 中, 使 from flow... 导入无缝解析
+src_dir = str(Path(__file__).resolve().parent.parent)
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -29,35 +35,54 @@ async def lifespan(app: FastAPI):
         DEFAULT_CSV if os.path.exists(DEFAULT_CSV) else None
     )
 
-    db = await init_db(
-        settings.DB_PATH,
-        csv_path=csv_path,
-        default_nickname=settings.KID_NICKNAME,
-        default_age=settings.KID_AGE,
+    db = None
+    try:
+        db = await init_db(
+            settings.DB_PATH,
+            csv_path=csv_path,
+            default_nickname=settings.KID_NICKNAME,
+            default_age=settings.KID_AGE,
+        )
+
+        checkpointer = AsyncSqliteSaver(db)
+        await checkpointer.setup()
+
+        agent = await build_agent(llm_flash, llm_max, db, checkpointer=checkpointer)
+        app.state.settings = settings
+        app.state.db = db
+        app.state.agent = agent
+
+        yield
+    finally:
+        if hasattr(app.state, "agent"):
+            inner = getattr(app.state.agent, "agent", None)
+            if inner is not None:
+                try:
+                    await inner.aclose()
+                except Exception as e:
+                    logger.warning(
+                        f"agent.aclose() failed during shutdown: {e}", exc_info=True
+                    )
+        if db is not None:
+            try:
+                await db.close()
+            except Exception as e:
+                logger.warning(f"db.close() failed during shutdown: {e}", exc_info=True)
+
+
+from fastapi.openapi.docs import get_swagger_ui_html
+
+app = FastAPI(docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - Swagger UI",
+        swagger_js_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css",
     )
-
-    checkpointer = AsyncSqliteSaver(db)
-    await checkpointer.setup()
-
-    agent = await build_agent(llm_flash, llm_max, db, checkpointer=checkpointer)
-    app.state.settings = settings
-    app.state.db = db
-    app.state.agent = agent
-
-    yield
-
-    inner = getattr(agent, "agent", None)
-    if inner is not None:
-        try:
-            await inner.aclose()
-        except Exception as e:
-            logger.warning(
-                f"agent.aclose() failed during shutdown: {e}", exc_info=True
-            )
-    await app.state.db.close()
-
-
-app = FastAPI(lifespan=lifespan)
 
 
 @app.exception_handler(Exception)

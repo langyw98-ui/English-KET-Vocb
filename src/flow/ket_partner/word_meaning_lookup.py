@@ -41,10 +41,15 @@ async def lookup_word_meaning(
     word_line = f"单词：{word}"
     if context:
         word_line += f"（in the sense of {context}）"
+    
+    content_parts = []
+    if sentence and word.lower() in sentence.lower():
+        content_parts.append(f"句子：{sentence}")
+    content_parts.append(word_line)
+
     messages = [
         SystemMessage(content=_SYSTEM),
-        HumanMessage(content=f"句子：{sentence}"),
-        HumanMessage(content=word_line),
+        HumanMessage(content="\n".join(content_parts)),
     ]
     try:
         result = await structured.ainvoke(messages)

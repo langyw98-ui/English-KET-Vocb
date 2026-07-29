@@ -6,6 +6,13 @@ from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
+import yaml
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = getLogger("ket_partner")
 
 if environ.get("PYTEST_VERSION") is not None:
@@ -15,7 +22,44 @@ else:
 
 extra_params = {"enable_thinking": False}
 
-dashscope_api_key = environ.get("DASHSCOPE_API_KEY", "")
+
+def _resolve_dashscope_api_key() -> str:
+    # 1. 优先读取环境变量
+    for env_var in ["DASHSCOPE_API_KEY", "QWEN_API_KEY", "OPENAI_API_KEY"]:
+        val = environ.get(env_var)
+        if val and val.strip():
+            return val.strip()
+
+    # 2. 读取用户家目录下的 ~/.config/pet/config.yaml 配置文件
+    pet_config = Path.home() / ".config" / "pet" / "config.yaml"
+    if pet_config.exists():
+        try:
+            with open(pet_config, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if isinstance(data, dict):
+                keys_to_check = [
+                    "dashscope_api_key",
+                    "daskscope_api_key",
+                    "DASHSCOPE_API_KEY",
+                    "AKE_LLM_LOW_API_KEY",
+                    "AKE_LLM_MID_API_KEY",
+                    "AKE_LLM_HIGH_API_KEY",
+                    "api_key",
+                ]
+                for k in keys_to_check:
+                    val = data.get(k)
+                    if val and isinstance(val, str) and val.strip():
+                        return val.strip()
+                for k, v in data.items():
+                    if "api_key" in str(k).lower() and isinstance(v, str) and v.strip():
+                        return v.strip()
+        except Exception as e:
+            logger.warning(f"Failed to load API key from {pet_config}: {e}")
+
+    return ""
+
+
+dashscope_api_key = _resolve_dashscope_api_key()
 llm_plus = ChatOpenAI(
     api_key=SecretStr(dashscope_api_key),
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
