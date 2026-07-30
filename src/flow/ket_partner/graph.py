@@ -1,11 +1,11 @@
 """Graph topology + routing + factory. Extracted from KETPartnerAgent.compile."""
 from typing import Any
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from flow.common import LlmService, default_llm_service
 from flow.ket_partner.agent import KETPartnerAgent
 from flow.ket_partner.config import load_config
 from flow.ket_partner.state import BTPKetState
@@ -98,14 +98,18 @@ def wire_graph(builder: StateGraph, agent: KETPartnerAgent) -> None:
 
 
 async def build_agent(
-    llm_flash: BaseChatModel,
-    llm_smart: BaseChatModel,
+    llm_service: LlmService | None = None,
     checkpointer: Any = None,
 ) -> CompiledStateGraph:
+    if llm_service is None:
+        llm_service = default_llm_service
     cfg = load_config()
-    agent = KETPartnerAgent(llm_flash, llm_smart, cfg)
+    agent = KETPartnerAgent(llm_service, cfg)
     builder = StateGraph(BTPKetState)
     wire_graph(builder, agent)
     graph = builder.compile(checkpointer=checkpointer)
-    graph.agent = agent  # type: ignore[attr-defined]
+    # CompiledStateGraph 没有声明 .agent 属性;用 setattr 显式挂载 inner agent
+    # 实例,供 api/app.py 与 cli/main.py 在 shutdown 时 await .agent.aclose()。
+    # 不用 # type: ignore[attr-defined],符合 CLAUDE.md §九.4(仅 Wrapper 模块允许)。
+    setattr(graph, "agent", agent)
     return graph

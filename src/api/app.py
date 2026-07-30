@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from flow.common import llm_flash, llm_max, logger
+from flow.common import default_llm_service, logger
 from flow.ket_partner.graph import build_agent
 from src.api.llm_key import LlmKeyStatus
 from src.api.routes import chat, llm, messages, report
@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         checkpointer = AsyncSqliteSaver(db)
         await checkpointer.setup()
 
-        agent = await build_agent(llm_flash, llm_max, checkpointer=checkpointer)
+        agent = await build_agent(default_llm_service, checkpointer=checkpointer)
         app.state.settings = settings
         app.state.db = db
         app.state.agent = agent

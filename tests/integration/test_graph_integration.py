@@ -46,6 +46,17 @@ def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translati
     return llm
 
 
+def _mock_llm_service(llm):
+    """构造满足 LlmService Protocol 的 mock service(smart=flash=llm)。
+
+    Phase 2 起 build_agent 接受 LlmService,而非 (llm_flash, llm_smart)。
+    """
+    svc = MagicMock()
+    svc.smart = llm
+    svc.flash = llm
+    return svc
+
+
 @pytest.mark.asyncio
 async def test_stateless_agent_invocation(temp_db_path):
     csv_text = "word,part_of_speech,topic,context\ncat,n,Animals,\ndog,n,Animals,\nbed,n,Home,\nthe,det,,\non,prep,,\nin,prep,,\nbox,n,,\nis,v,,\n"
@@ -56,7 +67,7 @@ async def test_stateless_agent_invocation(temp_db_path):
     try:
         repos = Repos.for_user(db, "test_user")
         llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-        graph = await build_agent(llm_flash=llm, llm_smart=llm, checkpointer=None)
+        graph = await build_agent(llm_service=_mock_llm_service(llm), checkpointer=None)
 
         config = {
             "configurable": {
@@ -99,7 +110,7 @@ def _make_config(repos, thread_id="default", user_info=None):
 @pytest.mark.asyncio
 async def test_first_turn_generates_sentence(setup):
     llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(setup, "first"),
@@ -119,7 +130,7 @@ async def test_correct_translation_increments_mastery(setup):
         eval_resp=TranslationEval(correct_translation="猫在床上", wrong_words=[]),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -144,7 +155,7 @@ async def test_wrong_translation_deducts(setup):
         ),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(setup, "wrong"),
@@ -164,7 +175,7 @@ async def test_idk_deducts_target_only(setup):
         sentence_translation_resp=SentenceTranslation(translation="猫在床上"),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(setup, "idk"),
@@ -203,7 +214,7 @@ async def test_asks_meaning_deducts_asked_word(setup):
         meaning_resp=WordMeaning(meaning="猫"),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(setup, "ask"),
@@ -289,7 +300,7 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
         eval_resp=TranslationEval(correct_translation="猫在床上", wrong_words=[]),
         sentence_texts=("The cat is on the bed.", "The dog is on the bed."),
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     # Turn 1: first message, single-element window.
     r1 = await agent.ainvoke(
@@ -361,7 +372,7 @@ async def test_asks_meaning_does_not_re_expose_words(setup):
         meaning_resp=WordMeaning(meaning="猫"),
         sentence_texts=("The cat is on the bed.",),
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     # Turn 1: produces a sentence containing [cat, bed] (per validator).
     await agent.ainvoke(
@@ -414,7 +425,7 @@ async def test_asks_meaning_non_ket_word_does_not_deduct(setup):
         meaning_resp=WordMeaning(meaning="北京"),
         sentence_texts=("The cat is on the bed.",),
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     # Turn 1: establish a sentence.
     await agent.ainvoke(
@@ -443,7 +454,7 @@ async def test_agent_aclose_drains_background_tasks(setup):
     silently dropping them on shutdown.
     """
     llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
 
     # The agent instance must be reachable from the graph (per the I3 fix).
     agent_instance = getattr(graph, "agent", None)
@@ -471,7 +482,7 @@ async def test_agent_aclose_drains_background_tasks(setup):
 async def test_agent_aclose_no_tasks_is_noop(setup):
     """I3: aclose() must be safe to call when there are no background tasks."""
     llm = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     agent_instance = graph.agent
     # No tasks scheduled — should return quickly without error.
     await agent_instance.aclose()
@@ -498,7 +509,7 @@ async def test_wrong_word_rendered_and_deducted(setup):
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -542,7 +553,7 @@ async def test_evaluate_node_dedupes_duplicate_wrong_words(setup):
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -582,7 +593,7 @@ async def test_evaluate_node_drops_words_not_in_sentence(setup):
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -659,7 +670,7 @@ async def test_evaluate_keeps_non_ket_word_in_display_but_skips_stats(setup, mon
         ),
         sentence_text="The dog runs.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -723,7 +734,7 @@ async def test_evaluate_node_drops_word_with_matching_kid_and_correct_translatio
         ),
         sentence_text="The cat is in the box.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -780,7 +791,7 @@ async def test_overall_correct_false_with_no_wrong_words_keeps_mastery_neutral(s
         ),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     # Turn 1: generate the sentence so each word has a stats row at mastery 0
     # (status 'exposed' or 'learning' depending on whether it's the target).
@@ -836,7 +847,7 @@ async def test_overall_correct_false_with_no_wrong_words_renders_deviation_messa
         ),
         sentence_text="We can go out to play in the park.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -880,7 +891,7 @@ async def test_overall_correct_true_with_no_wrong_words_rewards_normally(setup):
         ),
         sentence_text="The cat is on the bed.",
     )
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -935,7 +946,7 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
     monkeypatch.setattr(sentence_orchestration_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
 
     # Force a small retry limit so the test doesn't loop forever.
     original_limit = graph.agent.config.validate_retry_limit
@@ -975,7 +986,7 @@ async def test_generate_node_regens_when_more_than_one_non_ket(setup, monkeypatc
     monkeypatch.setattr(sentence_orchestration_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     await graph.ainvoke(
@@ -1013,7 +1024,7 @@ async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch
     monkeypatch.setattr(sentence_orchestration_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     # Seed recent_sentences with the duplicate so the first draft collides.
@@ -1063,7 +1074,7 @@ async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
     monkeypatch.setattr(sentence_orchestration_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     await graph.ainvoke(
@@ -1109,7 +1120,7 @@ async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypat
     monkeypatch.setattr(sentence_orchestration_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     # Seed recent_sentences with the duplicate so the first draft collides.
@@ -1175,7 +1186,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     monkeypatch.setattr(sentence_orchestration_module, "check_naturalness", fake_naturalness)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     # Override the target via the select_target_word node — easiest path is to
@@ -1253,7 +1264,7 @@ async def test_generate_node_accepts_placeholder_target_with_substitution(setup,
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 3
 
     await graph.ainvoke(
@@ -1293,7 +1304,7 @@ async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypa
     monkeypatch.setattr(sentence_orchestration_module, "validate_sentence", fake_validate)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 1
     graph.agent.config.variety.recent_window = 3
 
@@ -1352,7 +1363,7 @@ async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -1393,7 +1404,7 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
     monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup_meanings)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
@@ -1435,7 +1446,7 @@ async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "lookup_word_meanings", fake_lookup)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
 
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -1457,7 +1468,7 @@ async def test_restart_does_not_leak_prior_session_unfinished_sentence(setup):
     """
     # Session 1: simulate one full turn — kid says "hi", AI emits a sentence.
     llm1 = _mock_llm(intent_resp=None, sentence_text="The cat is on the bed.")
-    agent1 = await build_agent(llm_flash=llm1, llm_smart=llm1)
+    agent1 = await build_agent(llm_service=_mock_llm_service(llm1))
     await agent1.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(setup, "s1"),
@@ -1480,7 +1491,7 @@ async def test_restart_does_not_leak_prior_session_unfinished_sentence(setup):
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         sentence_text="The dog is on the bed.",
     )
-    agent2 = await build_agent(llm_flash=llm2, llm_smart=llm2)
+    agent2 = await build_agent(llm_service=_mock_llm_service(llm2))
     result = await agent2.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(setup, "s2"),
@@ -1535,7 +1546,7 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
     monkeypatch.setattr(sentence_orchestration_module, "check_naturalness", fake_naturalness)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 3
 
     result = await graph.ainvoke(
@@ -1594,7 +1605,7 @@ async def test_naturalness_check_skipped_when_ket_validation_fails(setup, monkey
     monkeypatch.setattr(sentence_orchestration_module, "check_naturalness", fake_naturalness)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     await graph.ainvoke(
@@ -1630,8 +1641,7 @@ async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monke
         sentence_text="The cat is on the bed.",
     )
     agent = await build_agent(
-        llm_flash=llm,
-        llm_smart=llm,
+        llm_service=_mock_llm_service(llm),
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -1700,8 +1710,7 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
 
     llm = _mock_llm(intent_resp=None)
     agent = await build_agent(
-        llm_flash=llm,
-        llm_smart=llm,
+        llm_service=_mock_llm_service(llm),
     )
     await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
@@ -1830,7 +1839,7 @@ async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
     monkeypatch.setattr(agent_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
@@ -1908,7 +1917,7 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
     monkeypatch.setattr(sentence_orchestration_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(
@@ -1999,7 +2008,7 @@ async def test_word_switch_only_once(setup, monkeypatch):
     monkeypatch.setattr(sentence_orchestration_module, "select_target_word", fake_select)
 
     llm = _mock_llm(intent_resp=None, sentence_text="ignored")
-    graph = await build_agent(llm_flash=llm, llm_smart=llm)
+    graph = await build_agent(llm_service=_mock_llm_service(llm))
     graph.agent.config.validate_retry_limit = 2
 
     result = await graph.ainvoke(

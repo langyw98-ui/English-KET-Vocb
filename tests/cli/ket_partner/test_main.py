@@ -89,9 +89,9 @@ async def test_main_initializes_and_loops(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_main_invokes_build_agent_without_db(monkeypatch):
-    """Spec §11 / Task 13: build_agent(llm_flash, llm_smart) — db has a default
-    and must NOT be passed by main(). Asserting call args (not just that main()
-    returned) catches the regression where someone re-adds db to the call."""
+    """Spec §11 / Task 13 + Phase 2: build_agent(default_llm_service) — db 已删除,
+    Phase 2 改为接受单一 LlmService 参数。断言调用参数(而非仅断言 main() 返回)
+    可以捕获"有人重新加回 db"或"绕开 LlmService DI"等回归。"""
     fake_build = AsyncMock(name="build_agent")
     _install_wiring(monkeypatch, fake_build)
 
@@ -99,8 +99,8 @@ async def test_main_invokes_build_agent_without_db(monkeypatch):
 
     fake_build.assert_awaited_once()
     args, kwargs = fake_build.await_args
-    # Only llm_flash + llm_smart positional; no positional db.
-    assert len(args) == 2
+    # Only LlmService positional; no positional db.
+    assert len(args) == 1
     # Defensive: db must not slip in via keyword either.
     assert "db" not in kwargs
     assert "checkpointer" not in kwargs

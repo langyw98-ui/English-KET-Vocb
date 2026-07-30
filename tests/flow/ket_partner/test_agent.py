@@ -66,6 +66,18 @@ def _make_repos() -> MagicMock:
     return repos
 
 
+def _make_llm_service(llm_smart: MagicMock) -> MagicMock:
+    """构造满足 LlmService Protocol 的 mock service。
+
+    KETPartnerAgent 通过 LlmService DI 接收 LLM(Phase 2),
+    不再直接持有 BaseChatModel。smart/flash 通过属性暴露。
+    """
+    svc = MagicMock()
+    svc.smart = llm_smart
+    svc.flash = MagicMock()
+    return svc
+
+
 @pytest.mark.asyncio
 async def test_run_summary_safe_swallows_openai_api_error():
     """_run_summary_safe is a background-task wrapper: it MUST NOT raise
@@ -76,9 +88,8 @@ async def test_run_summary_safe_swallows_openai_api_error():
         APIError(message="llm down", request=MagicMock(), body=None)
     )
     agent = KETPartnerAgent(
-        llm_flash=MagicMock(),
-        llm_smart=llm_smart,
-        config=KetConfig(),
+        _make_llm_service(llm_smart),
+        KetConfig(),
     )
     repos = _make_repos()
 
@@ -102,9 +113,8 @@ async def test_run_summary_safe_propagates_code_bug():
     """
     llm_smart, bound = _make_summary_llm(AttributeError("simulated code bug"))
     agent = KETPartnerAgent(
-        llm_flash=MagicMock(),
-        llm_smart=llm_smart,
-        config=KetConfig(),
+        _make_llm_service(llm_smart),
+        KetConfig(),
     )
     repos = _make_repos()
 

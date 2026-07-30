@@ -42,6 +42,17 @@ def _mock_llm_with_responses(responses: dict):
     return llm
 
 
+def _mock_llm_service(llm: MagicMock) -> MagicMock:
+    """构造满足 LlmService Protocol 的 mock service(smart=flash=llm)。
+
+    Phase 2 起 build_agent 接受 LlmService,而非 (llm_flash, llm_smart)。
+    """
+    svc = MagicMock()
+    svc.smart = llm
+    svc.flash = llm
+    return svc
+
+
 def _make_config(repos, thread_id="t1"):
     return {
         "configurable": {
@@ -57,7 +68,7 @@ def _make_config(repos, thread_id="t1"):
 async def test_graph_first_turn_generates_sentence(setup):
     repos = setup
     llm = _mock_llm_with_responses({})
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(repos, thread_id="t1"),
@@ -75,7 +86,7 @@ async def test_graph_translation_correct_flow(setup):
         TranslationEval: TranslationEval(correct_translation="那只大猫在这里", wrong_words=[]),
     }
     llm = _mock_llm_with_responses(responses)
-    agent = await build_agent(llm_flash=llm, llm_smart=llm)
+    agent = await build_agent(llm_service=_mock_llm_service(llm))
 
     # Turn 1: first sentence
     await agent.ainvoke(

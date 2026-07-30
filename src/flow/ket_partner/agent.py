@@ -1,11 +1,13 @@
 import asyncio
 
 import openai
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from flow.common import logger
+from flow.common import LlmService, logger
 from flow.ket_partner import nodes
+from flow.ket_partner.config import KetConfig
 from flow.ket_partner.dialogue_domain import run_profile_summary
 from flow.ket_partner.persistence import KETPartnerRepos
 from flow.ket_partner.state import BTPKetState
@@ -21,11 +23,29 @@ _LLM_RETRYABLE: tuple[type[BaseException], ...] = (
 
 
 class KETPartnerAgent:
-    def __init__(self, llm_flash, llm_smart, config):
-        self.llm_flash = llm_flash
-        self.llm_smart = llm_smart
+    """KET Partner 对话 agent。
+
+    LLM 通过 LlmService Protocol 注入(Phase 2 DI 重构),业务代码不直接
+    持有 BaseChatModel,而是依赖 service.smart / service.flash 属性,
+    便于测试用 mock service 替换。
+
+    - _llm_service: 仅 __init__ 在构造时写;其他位置只读。
+    - config: 仅 __init__ 在构造时写;其他位置只读。
+    - _bg_tasks: 仅 _run_summary_safe 创建任务时 add,aclose 时迭代清理;其他位置只读。
+    """
+
+    def __init__(self, llm_service: LlmService, config: KetConfig) -> None:
+        self._llm_service = llm_service
         self.config = config
-        self._bg_tasks = set()
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    @property
+    def llm_smart(self) -> BaseChatModel:
+        return self._llm_service.smart
+
+    @property
+    def llm_flash(self) -> BaseChatModel:
+        return self._llm_service.flash
 
     async def init_state(self, state: BTPKetState, config: RunnableConfig) -> dict:
         return await nodes.init_state(state, config, self)
