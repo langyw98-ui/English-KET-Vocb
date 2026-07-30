@@ -5,6 +5,7 @@ Each Repo exposes a narrow async interface over a single table family.
 Repos (Task 7) aggregates the 5 per-user Repos for one request.
 """
 import json
+import re
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -424,3 +425,70 @@ class LogRepo:
             "words_used": json.loads(row[1]) if row[1] else [],
             "target_words": json.loads(row[2]) if row[2] else [],
         }
+
+
+class RecentSentencesRepo:
+    """recent_sentences table — read/write."""
+
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default") -> None:
+        self._db = db
+        self._user_id = user_id
+
+    async def list_recent(self, limit: int = 20) -> list[str]:
+        async with self._db.execute(
+            "SELECT sentence FROM recent_sentences WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (self._user_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
+    async def append(self, sentence: str, window: int = 20) -> None:
+        now = datetime.now(timezone.utc)
+        await self._db.execute(
+            "INSERT INTO recent_sentences (user_id, sentence, created_at) VALUES (?, ?, ?)",
+            (self._user_id, sentence, now),
+        )
+        await self._db.execute(
+            "DELETE FROM recent_sentences WHERE user_id=? AND rowid NOT IN ("
+            "    SELECT rowid FROM recent_sentences WHERE user_id=? ORDER BY created_at DESC, rowid DESC LIMIT ?"
+            ")",
+            (self._user_id, self._user_id, window),
+        )
+        await self._db.commit()
+
+    async def list_recent_scaffolding(self, window: int = 20) -> list[list[str]]:
+        sentences = await self.list_recent(limit=window)
+        scaffolding_list: list[list[str]] = []
+        pattern = re.compile(r"[A-Za-z']+")
+        for s in sentences:
+            tokens = [t.lower() for t in pattern.findall(s)]
+            scaffolding_list.append(tokens)
+        return scaffolding_list
+
+
+class Repos:
+    """Facade over 5 per-user Repos. Constructed once per request; user_id isolates."""
+
+    def __init__(
+        self,
+        db: aiosqlite.Connection,
+        user_id: str = "default",
+    ) -> None:
+        self._db = db
+        self._user_id = user_id
+        self.vocab = VocabRepo(db, user_id)
+        self.stats = StatsRepo(db, user_id)
+        self.profile = ProfileRepo(db, user_id)
+        self.log = LogRepo(db, user_id)
+        self.recent = RecentSentencesRepo(db, user_id)
+
+    @classmethod
+    def for_user(
+        cls,
+        db: aiosqlite.Connection,
+        user_id: str = "default",
+    ) -> "Repos":
+        return cls(db, user_id)
+
+    async def close(self) -> None:
+        await self._db.close()

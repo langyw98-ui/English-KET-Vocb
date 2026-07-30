@@ -5,7 +5,13 @@ import pytest
 
 from src.persistence.bootstrap import init_db
 from src.persistence.models import WordRef
-from src.persistence.repos import LogRepo, ProfileRepo, StatsRepo, VocabRepo
+from src.persistence.repos import (
+    LogRepo,
+    ProfileRepo,
+    Repos,
+    StatsRepo,
+    VocabRepo,
+)
 
 
 async def _init_vocab_repo(db_path: str, csv_path: str | None = None) -> VocabRepo:
@@ -457,3 +463,72 @@ class TestLogRepo:
         last = await repo.last_ai_message()
         assert last is not None
         assert last["target_words"] == [{"word": "smart", "context": "clever"}]
+
+
+async def _init_repos(db_path: str, csv_path: str | None = None) -> Repos:
+    """Aggregate helper for tests that exercise cross-repo behavior.
+
+    Opens DB via bootstrap.init_db, wraps a full Repos facade. Caller owns
+    the connection (Repos.close is the caller's responsibility, or rely on
+    temp_db_path file cleanup).
+    """
+    db = await init_db(db_path, csv_path=csv_path)
+    return Repos.for_user(db, "default")
+
+
+@pytest.mark.asyncio
+class TestRecentSentencesRepo:
+    async def test_recent_sentences_repo(self, temp_db_path):
+        db = await init_db(temp_db_path, csv_path=None)
+        try:
+            repos_a = Repos.for_user(db, "user_a")
+            repos_b = Repos.for_user(db, "user_b")
+
+            await repos_a.recent.append("The cat slept on the mat.")
+            recent_a = await repos_a.recent.list_recent(limit=10)
+            recent_b = await repos_b.recent.list_recent(limit=10)
+
+            assert recent_a == ["The cat slept on the mat."]
+            assert recent_b == []
+
+            scaffolding_a = await repos_a.recent.list_recent_scaffolding(window=20)
+            assert scaffolding_a == [["the", "cat", "slept", "on", "the", "mat"]]
+        finally:
+            await db.close()
+
+
+@pytest.mark.asyncio
+class TestRepos:
+    async def test_multi_user_isolation(self, temp_db_path):
+        db = await init_db(temp_db_path, csv_path=None)
+        try:
+            repos_a = Repos.for_user(db, "user_a")
+            repos_b = Repos.for_user(db, "user_b")
+
+            await repos_a.stats.increment_exposed("cat", context="slipping")
+
+            stats_a = await repos_a.stats.get("cat", context="slipping")
+            stats_b = await repos_b.stats.get("cat", context="slipping")
+
+            assert stats_a["exposed_count"] == 1
+            assert stats_b is None
+        finally:
+            await db.close()
+
+    async def test_ket_vocabulary_uses_composite_pk(self, temp_db_path):
+        """Spec §2.1: ket_vocabulary PK is (word, context). Verifying via PRAGMA
+        because a wrong PK silently breaks INSERT OR IGNORE uniqueness."""
+        db = await init_db(temp_db_path, csv_path=None)
+        async with db.execute("PRAGMA table_info(ket_vocabulary)") as cur:
+            rows = await cur.fetchall()
+        pk_cols = {r[1] for r in rows if r[5] != 0}   # r[5] is pk flag
+        assert pk_cols == {"word", "context"}
+
+    async def test_for_user_no_config_param(self, temp_db_path):
+        """Spec §3: Repos.for_user signature drops config (Option B).
+        Constructing without config must succeed — no KetConfig import."""
+        db = await init_db(temp_db_path, csv_path=None)
+        repos = Repos.for_user(db, "default")
+        assert repos.vocab is not None
+        assert repos.stats is not None
+        await repos.close()
