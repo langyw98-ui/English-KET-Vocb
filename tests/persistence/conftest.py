@@ -12,4 +12,7 @@ def temp_db_path():
     os.unlink(path)
     yield path
     if os.path.exists(path):
-        os.unlink(path)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
