@@ -2,7 +2,7 @@ from typing import Literal, TypedDict
 
 from langchain_core.messages import AnyMessage
 
-KetIntent = Literal["translate", "asks_meaning", "idk", "off_topic", "non_compliant"]
+KetIntent = Literal["translation", "asks_meaning", "idk", "off_topic", "non_compliant"]
 
 
 class BTPKetState(TypedDict):
