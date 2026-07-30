@@ -5,9 +5,13 @@ import pytest
 
 from flow.ket_partner.config import load_config
 from flow.ket_partner.vocab_domain import (
+    SentenceTranslation,
     WordMeaning,
+    WordMeanings,
     apply_mastery_updates,
+    lookup_sentence_translation,
     lookup_word_meaning,
+    lookup_word_meanings,
     rotate_topic,
     select_target_word,
 )
@@ -155,12 +159,69 @@ async def test_lookup_returns_meaning():
 
 @pytest.mark.asyncio
 async def test_lookup_fallback_on_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回默认值,且 mock 确实被调用过。"""
+    from openai import APIError
+
     llm = MagicMock()
     bound = MagicMock()
-    bound.ainvoke = AsyncMock(side_effect=RuntimeError("fail"))
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="sdk timeout",
+            request=MagicMock(),
+            body=None,
+        )
+    )
     llm.with_structured_output = MagicMock(return_value=bound)
-    result = await lookup_word_meaning(llm, "The cat is big.", "cat")
-    assert "失败" in result.meaning or result.meaning
+    result = await lookup_word_meaning(llm, "I see a cat.", "cat")
+    assert result.meaning == "(cat 词义查询失败)"
+    llm.with_structured_output.assert_called_once_with(WordMeaning, method="function_calling")
+    bound.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lookup_word_meanings_fallback_on_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回空 meaning 列表,且 mock 确实被调用过。"""
+    from openai import APIError
+
+    llm = MagicMock()
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="sdk timeout",
+            request=MagicMock(),
+            body=None,
+        )
+    )
+    llm.with_structured_output = MagicMock(return_value=bound)
+    result = await lookup_word_meanings(llm, "I see a cat and a dog.", ["cat", "dog"])
+    assert result == [
+        {"word": "cat", "meaning": ""},
+        {"word": "dog", "meaning": ""},
+    ]
+    llm.with_structured_output.assert_called_once_with(WordMeanings, method="function_calling")
+    bound.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lookup_sentence_translation_fallback_on_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回默认翻译,且 mock 确实被调用过。"""
+    from openai import APIError
+
+    llm = MagicMock()
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="sdk timeout",
+            request=MagicMock(),
+            body=None,
+        )
+    )
+    llm.with_structured_output = MagicMock(return_value=bound)
+    result = await lookup_sentence_translation(llm, "I see a cat.")
+    assert result.translation == "(翻译失败)"
+    llm.with_structured_output.assert_called_once_with(
+        SentenceTranslation, method="function_calling"
+    )
     bound.ainvoke.assert_awaited_once()
 
 

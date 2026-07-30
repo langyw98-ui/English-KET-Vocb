@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from flow.ket_partner.dialogue_domain import IntentClassification, TranslationEval
 from flow.ket_partner.graph import build_agent
 from flow.ket_partner.sentence_domain import NaturalnessResult
-from flow.ket_partner.vocab_domain import SentenceTranslation, WordMeaning
+from flow.ket_partner.vocab_domain import SentenceTranslation, WordMeaning, WordMeanings
 from src.persistence.bootstrap import init_db
 from src.persistence.models import WordRef
 from src.persistence.repos import Repos
@@ -28,6 +28,11 @@ def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translati
         responses[WordMeaning] = meaning_resp
     if sentence_translation_resp:
         responses[SentenceTranslation] = sentence_translation_resp
+    # Default WordMeanings (plural) to empty list — lookup_word_meanings is
+    # always invoked during generate_sentence; without a default the mock
+    # returns None, and the previous broad except AttributeError silently
+    # masked that contract violation.
+    responses.setdefault(WordMeanings, WordMeanings(meanings=[]))
 
     def structured(schema, **kwargs):
         bound = MagicMock()
@@ -243,6 +248,8 @@ def _mock_llm_seq(
         responses[WordMeaning] = meaning_resp
     if sentence_translation_resp:
         responses[SentenceTranslation] = sentence_translation_resp
+    # Default WordMeanings (plural) to empty list — see _mock_llm for rationale.
+    responses.setdefault(WordMeanings, WordMeanings(meanings=[]))
 
     def structured(schema, **kwargs):
         bound = MagicMock()

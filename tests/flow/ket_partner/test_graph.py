@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 from flow.ket_partner.dialogue_domain import IntentClassification, TranslationEval
 from flow.ket_partner.graph import build_agent
 from flow.ket_partner.sentence_domain import NaturalnessResult
+from flow.ket_partner.vocab_domain import WordMeanings
 from src.persistence.bootstrap import init_db
 from src.persistence.repos import Repos
 
@@ -25,6 +26,10 @@ async def setup(temp_db_path):
 
 def _mock_llm_with_responses(responses: dict):
     responses.setdefault(NaturalnessResult, NaturalnessResult(ok=True, reason=""))
+    # Default WordMeanings to empty list — most tests don't care about per-word
+    # meaning lookups, but lookup_word_meanings is called during generate_sentence
+    # and would otherwise receive None, masking real-shape contract violations.
+    responses.setdefault(WordMeanings, WordMeanings(meanings=[]))
     llm = MagicMock()
     def structured(schema, **kwargs):
         bound = MagicMock()
