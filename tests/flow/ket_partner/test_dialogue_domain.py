@@ -58,12 +58,22 @@ async def test_classify_asks_meaning_extracts_word():
 
 @pytest.mark.asyncio
 async def test_classify_fallback_on_llm_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回 translation,且 mock 确实被调用过。"""
+    from openai import APIError
+
     llm = MagicMock()
     bound = MagicMock()
-    bound.ainvoke = AsyncMock(side_effect=RuntimeError("llm down"))
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="llm down",
+            request=MagicMock(),
+            body=None,
+        )
+    )
     llm.with_structured_output = MagicMock(return_value=bound)
     result = await classify_intent(llm, "The cat is big.", "那只猫很大")
     assert result.intent == "translation"
+    llm.with_structured_output.assert_called_once_with(IntentClassification, method="function_calling")
     bound.ainvoke.assert_awaited_once()
 
 
@@ -101,18 +111,28 @@ async def test_summary_updates_profile(temp_db_path):
 
 @pytest.mark.asyncio
 async def test_summary_fallback_on_error(temp_db_path):
+    """LLM 调用抛 openai.APIError 时,fallback 保留旧 profile,且 mock 确实被调用过。"""
+    from openai import APIError
+
     db = await init_db(temp_db_path, csv_path=None)
     repos = Repos.for_user(db, "default")
     try:
         await repos.profile.update(weakness_words=["old"], dialogue_strategy="old strat")
         llm = MagicMock()
         bound = MagicMock()
-        bound.ainvoke = AsyncMock(side_effect=RuntimeError("fail"))
+        bound.ainvoke = AsyncMock(
+            side_effect=APIError(
+                message="fail",
+                request=MagicMock(),
+                body=None,
+            )
+        )
         llm.with_structured_output = MagicMock(return_value=bound)
         await run_profile_summary(llm, repos)
         profile = await repos.profile.get()
         assert profile["weakness_words"] == ["old"]
         assert profile["dialogue_strategy"] == "old strat"
+        llm.with_structured_output.assert_called_once_with(ProfileSummary, method="function_calling")
         bound.ainvoke.assert_awaited_once()
     finally:
         await db.close()
@@ -170,9 +190,18 @@ async def test_evaluate_no_wrong_words():
 
 @pytest.mark.asyncio
 async def test_evaluate_fallback_on_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回空 wrong_words,且 mock 确实被调用过。"""
+    from openai import APIError
+
     llm = MagicMock()
     bound = MagicMock()
-    bound.ainvoke = AsyncMock(side_effect=RuntimeError("fail"))
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="fail",
+            request=MagicMock(),
+            body=None,
+        )
+    )
     llm.with_structured_output = MagicMock(return_value=bound)
     result = await evaluate_translation(
         llm,
@@ -183,6 +212,7 @@ async def test_evaluate_fallback_on_error():
     )
     assert result.wrong_words == []
     assert result.correct_translation == ""
+    llm.with_structured_output.assert_called_once_with(TranslationEval, method="function_calling")
     bound.ainvoke.assert_awaited_once()
 
 

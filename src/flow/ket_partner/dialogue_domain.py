@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Literal
 
+import openai
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from flow.common import logger
 from flow.ket_partner.persistence import KETPartnerRepos
 from flow.ket_partner.state import BTPKetState
+
+# dialogue_domain 内所有 LLM 调用的可重试外部失败类型。
+# 严格按 CLAUDE.md §1.5:只含具体外部失败,不含 ValueError/AttributeError/TypeError
+# 等代码 bug 类型——那些必须直接暴露被测试捕获。
+_LLM_RETRYABLE: tuple[type[BaseException], ...] = (
+    openai.APIError,          # openai SDK 的所有 API 异常基类(APITimeoutError/APIConnectionError/RateLimitError 等)
+    asyncio.TimeoutError,     # asyncio.wait_for 超时
+    ValidationError,          # pydantic Schema 校验失败(LLM 返回畸形结构)
+)
 
 # ---------------------------------------------------------------------------
 # Input Intent Classification
@@ -39,7 +50,7 @@ async def classify_intent(llm, last_english_sentence: str | None, kid_input: str
     ]
     try:
         return await structured.ainvoke(messages)
-    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+    except _LLM_RETRYABLE as e:
         logger.warning(
             f"classify_intent failed: {e}; defaulting to translation", exc_info=True
         )
@@ -82,7 +93,7 @@ async def run_profile_summary(llm, repos: KETPartnerRepos) -> None:
             weakness_words=summary.weakness_words,
             dialogue_strategy=summary.dialogue_strategy,
         )
-    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+    except _LLM_RETRYABLE as e:
         logger.warning(
             f"profile summary failed: {e}; keeping old profile", exc_info=True
         )
@@ -201,7 +212,7 @@ async def evaluate_translation(
     ]
     try:
         return await structured.ainvoke(messages)
-    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+    except _LLM_RETRYABLE as e:
         logger.warning(
             f"evaluate_translation failed: {e}; defaulting to no wrong words",
             exc_info=True,
