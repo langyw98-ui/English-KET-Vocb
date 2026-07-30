@@ -1,7 +1,10 @@
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+import aiosqlite
 
 # 确保 src 目录在 sys.path 中, 使 from flow... 导入无缝解析
 src_dir = str(Path(__file__).resolve().parent.parent)
@@ -67,14 +70,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             if inner is not None:
                 try:
                     await inner.aclose()
-                except Exception as e:
+                except (RuntimeError, asyncio.TimeoutError) as e:
                     logger.warning(
                         f"agent.aclose() failed during shutdown: {e}", exc_info=True
                     )
         if db is not None:
             try:
                 await db.close()
-            except Exception as e:
+            except (RuntimeError, OSError, aiosqlite.Error) as e:
                 logger.warning(f"db.close() failed during shutdown: {e}", exc_info=True)
 
 
