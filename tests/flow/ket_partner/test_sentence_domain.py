@@ -1047,10 +1047,10 @@ async def test_generate_with_fallback_returns_first_passing(
         config=cfg,
     )
 
-    assert out[0] == sentence
-    assert out[1] is result_obj
-    assert out[2] == "cat"
-    assert out[3] == ""
+    assert out.sentence == sentence
+    assert out.result is result_obj
+    assert out.target == "cat"
+    assert out.context == ""
     gen_mock.assert_awaited_once()
     validate_orch_mock.assert_awaited_once()
     select_mock.assert_not_awaited()
@@ -1125,8 +1125,8 @@ async def test_generate_with_fallback_switches_target_on_all_naturalness_failure
         config=cfg,
     )
 
-    assert out[0] == switched_sentence
-    assert out[2] == "dog"
+    assert out.sentence == switched_sentence
+    assert out.target == "dog"
     select_mock.assert_awaited_once()
     assert gen_mock.await_count == 4
     first_switched_call = gen_mock.await_args_list[3]
@@ -1206,8 +1206,8 @@ async def test_generate_with_fallback_accepts_overflow_after_retry_limit(
         config=cfg,
     )
 
-    assert out[0] == best_sentence
-    assert out[1] is refreshed_result
+    assert out.sentence == best_sentence
+    assert out.result is refreshed_result
     select_mock.assert_not_awaited()
     validate_sentence_mock.assert_awaited_once()
 
@@ -1341,3 +1341,59 @@ def test_sentence_generation_result_has_named_fields():
 
     fields = {f.name for f in dataclasses.fields(SentenceGenerationResult)}
     assert fields == {"sentence", "result", "target", "context"}
+
+
+@pytest.mark.asyncio
+async def test_generate_with_fallback_returns_named_result():
+    """generate_with_fallback 必须返回 SentenceGenerationResult,不能是裸元组。
+
+    本测试用最小 mock LLM 让函数走通正常路径,验证返回类型契约;
+    具体业务路径(重试、换词、降级)由现有 test_generate_with_fallback_* 覆盖。
+    """
+    from flow.ket_partner.config import KetConfig
+    from flow.ket_partner.sentence_domain import (
+        SentenceGenerationResult,
+        ValidationResult,
+        generate_with_fallback,
+    )
+
+    # 用最小 mock LLM 让函数走通正常路径
+    mock_llm = MagicMock()
+    mock_llm.bind.return_value.ainvoke = AsyncMock(
+        return_value=MagicMock(content="I see a cat.")
+    )
+    mock_llm.with_structured_output.return_value.ainvoke = AsyncMock(
+        return_value=ValidationResult(ok=True, words_used=["cat"], non_ket_words=[])
+    )
+    repos = MagicMock()
+    repos.recent.list_recent_scaffolding = AsyncMock(return_value=[])
+    repos.recent.list_recent = AsyncMock(return_value=[])
+    repos.recent.append = AsyncMock()
+    repos.stats.increment_exposed = AsyncMock()
+    repos.stats.oldest_learning_word = AsyncMock(return_value=None)
+    repos.vocab.get_ket_word_any_context = AsyncMock(return_value=None)
+
+    profile = {
+        "current_topic": "animals",
+        "in_refill_mode": 0,
+        "total_turns": 1,
+        "last_new_word_turn": 0,
+        "weakness_words": [],
+        "dialogue_strategy": "",
+    }
+
+    result = await generate_with_fallback(
+        llm_smart=mock_llm,
+        initial_target="cat",
+        initial_context="",
+        avoid_words=[],
+        avoid_sentences=[],
+        age=8,
+        profile=profile,
+        repos=repos,
+        config=KetConfig(),
+    )
+
+    assert isinstance(result, SentenceGenerationResult)
+    assert result.sentence == "I see a cat."
+    assert result.target == "cat"

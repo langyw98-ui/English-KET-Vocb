@@ -4,6 +4,7 @@ import random
 import re
 from dataclasses import dataclass
 from os.path import dirname, join
+from typing import Any, cast
 
 import openai
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -466,6 +467,178 @@ async def validate_and_categorize(
     }
 
 
+async def _generate_and_validate(
+    llm_smart: BaseChatModel,
+    target: str,
+    context: str,
+    avoid_words: list[str],
+    avoid_sentences: list[str],
+    age: int,
+    profile: dict,
+    repos: KETPartnerRepos,
+    config: KetConfig,
+) -> tuple[str, ValidationResult, list[dict[str, Any]]]:
+    """单轮造句 + 验证重试循环。返回 (sentence, result, attempts)。
+
+    attempts 是本轮所有失败尝试的列表,每项保留 _switch_target_or_accept 决策所需的全部
+    字段(sentence / reason_kind / reason_detail / non_ket_words / non_ket_count /
+    is_duplicate / is_target_split),让外层无需再访问 validate_and_categorize 的原始 check。
+
+    profile 当前未被本函数直接使用,保留参数是为了与外层 generate_with_fallback 签名对齐,
+    便于未来在此处插入基于 profile 的提示词调整(如年龄段差异化),不破坏调用方契约。
+    """
+    attempts: list[dict[str, Any]] = []
+    seen_non_ket_words: list[str] = []
+
+    def _regen() -> Any:
+        return generate_sentence(
+            llm_smart,
+            target=target,
+            recent_scaffolding=avoid_words,
+            age=age,
+            min_words=config.sentence.min_words,
+            max_words=config.sentence.max_words,
+            avoid_sentences=avoid_sentences,
+            prior_attempts=attempts,
+            avoid_non_ket_words=seen_non_ket_words,
+            target_context=context,
+        )
+
+    sentence = await _regen()
+    result: ValidationResult | None = None
+
+    for _ in range(config.validate_retry_limit):
+        check = await validate_and_categorize(
+            llm_smart, sentence, target, age, repos, avoid_sentences
+        )
+        result = check["result"]
+        if check["passed"]:
+            return sentence, result, attempts
+        attempts.append({
+            "sentence": sentence,
+            "reason_kind": check["reason_kind"],
+            "reason_detail": check["reason_detail"],
+            "non_ket_words": check["non_ket_words"],
+            "non_ket_count": check["non_ket_count"],
+            "is_duplicate": check["is_duplicate"],
+            "is_target_split": check["is_target_split"],
+        })
+        for w in check["non_ket_words"]:
+            if w not in seen_non_ket_words:
+                seen_non_ket_words.append(w)
+        sentence = await _regen()
+
+    # 重试用尽后的最终验证
+    check = await validate_and_categorize(
+        llm_smart, sentence, target, age, repos, avoid_sentences
+    )
+    result = check["result"]
+    if check["passed"]:
+        return sentence, result, attempts
+    attempts.append({
+        "sentence": sentence,
+        "reason_kind": check["reason_kind"],
+        "reason_detail": check["reason_detail"],
+        "non_ket_words": check["non_ket_words"],
+        "non_ket_count": check["non_ket_count"],
+        "is_duplicate": check["is_duplicate"],
+        "is_target_split": check["is_target_split"],
+    })
+    # check["result"] 类型为 Any(dict 取值),用 cast 显式收敛为 ValidationResult,
+    # 避免 # type: ignore 掩盖潜在的契约漂移(见 CLAUDE.md §9.4)。
+    return sentence, cast("ValidationResult", result), attempts
+
+
+async def _handle_overflow_fallback(
+    attempts: list[dict[str, Any]],
+    target: str,
+    context: str,
+    repos: KETPartnerRepos,
+) -> SentenceGenerationResult | None:
+    """若 attempts 含 non_ket_overflow 失败,选 non_ket_count 最少的草稿返回;否则 None。
+
+    选最少溢出草稿后,重新跑一次 validate_sentence 得到对应该草稿的权威 ValidationResult
+    (而非沿用失败时的快照),让 words_used / non_ket_words 与最终接受句一致。
+    """
+    overflow_attempts = [
+        a for a in attempts if a["reason_kind"] == "non_ket_overflow"
+    ]
+    if not overflow_attempts:
+        return None
+    best = min(reversed(overflow_attempts), key=lambda a: a["non_ket_count"])
+    sentence = best["sentence"]
+    result = await validate_sentence(sentence, repos, target=target)
+    logger.warning(
+        f"sentence validation: accepting non-KET overflow draft after "
+        f"{len(attempts)} attempts (non_ket_count={len(result.non_ket_words)}); "
+        f"sentence={sentence!r}"
+    )
+    return SentenceGenerationResult(
+        sentence=sentence, result=result, target=target, context=context
+    )
+
+
+async def _switch_target_or_accept(
+    attempts: list[dict[str, Any]],
+    sentence: str,
+    result: ValidationResult,
+    target: str,
+    context: str,
+    word_switched: bool,
+    profile: dict,
+    repos: KETPartnerRepos,
+    config: KetConfig,
+) -> SentenceGenerationResult | _RetryOuter:
+    """所有 attempts 均失败且不属于可降级的 non_ket_overflow 时进入此分支。
+
+    返回:
+    - SentenceGenerationResult: 接受当前草稿(无可用换词,或失败原因不适合换词)
+    - _RetryOuter: 请求外层 while 换词重试(仅当本轮全为 naturalness 失败、未换过词、
+      且能换到与当前 target 不同的新词时)
+    """
+    all_naturalness = bool(attempts) and all(
+        a["reason_kind"] == "naturalness" for a in attempts
+    )
+
+    if all_naturalness and not word_switched:
+        logger.info(
+            f"all {len(attempts)} attempts failed on naturalness; "
+            f"switching target word from '{target}'"
+        )
+        new_ref = await select_target_word(repos, profile, config)
+        if new_ref is None or new_ref.word == target:
+            logger.warning(
+                f"could not find a different target word; "
+                f"accepting final draft: {sentence!r}"
+            )
+            return SentenceGenerationResult(
+                sentence=sentence, result=result, target=target, context=context
+            )
+        return _RetryOuter(target=new_ref.word, context=new_ref.context)
+
+    # 其他失败原因(混合 / duplicate / target_split / 已换过词):接受当前草稿,记 warning
+    last = attempts[-1] if attempts else {}
+    reasons: list[str] = []
+    if last.get("non_ket_count", 0) > 1:
+        reasons.append(
+            f"{last['non_ket_count']} non-KET word(s): {last['non_ket_words']}"
+        )
+    if last.get("is_duplicate"):
+        reasons.append("duplicate of a recent sentence")
+    if last.get("is_target_split"):
+        reasons.append(f"multi-word target '{target}' split apart")
+    if not reasons and last.get("reason_detail"):
+        reasons.append(f"naturalness: {last['reason_detail']}")
+    logger.warning(
+        f"sentence validation failed after {len(attempts)} attempts; "
+        f"accepting current draft — reasons: {('; '.join(reasons)) or 'unknown'}; "
+        f"sentence={sentence!r}"
+    )
+    return SentenceGenerationResult(
+        sentence=sentence, result=result, target=target, context=context
+    )
+
+
 async def generate_with_fallback(
     llm_smart: BaseChatModel,
     initial_target: str,
@@ -476,112 +649,44 @@ async def generate_with_fallback(
     profile: dict,
     repos: KETPartnerRepos,
     config: KetConfig,
-) -> tuple[str, ValidationResult, str, str]:
+) -> SentenceGenerationResult:
+    """造句主入口:生成+验证重试 → 失败降级(溢出 / 换词 / 接受当前草稿)。
+
+    返回 SentenceGenerationResult(命名属性访问,替代原裸 4 元组,见 CLAUDE.md §2.11)。
+
+    内部用 _RetryOuter 信号类区分 _switch_target_or_accept 的两种返回语义:
+    - SentenceGenerationResult → 直接返回给调用方
+    - _RetryOuter → 切换 target/context 后重新进入外层 while 重试
+
+    状态写入者:
+    - target / context / word_switched: 仅本函数在收到 _RetryOuter 时更新;其他位置只读
+    """
     target = initial_target
     context = initial_context
     word_switched = False
 
     while True:
-        attempts: list[dict] = []
-        seen_non_ket_words: list = []
-
-        def _regen():
-            return generate_sentence(
-                llm_smart,
-                target=target,
-                recent_scaffolding=avoid_words,
-                age=age,
-                min_words=config.sentence.min_words,
-                max_words=config.sentence.max_words,
-                avoid_sentences=avoid_sentences,
-                prior_attempts=attempts,
-                avoid_non_ket_words=seen_non_ket_words,
-                target_context=context,
-            )
-
-        sentence = await _regen()
-        result = None
-
-        for _ in range(config.validate_retry_limit):
-            check = await validate_and_categorize(
-                llm_smart, sentence, target, age, repos, avoid_sentences
-            )
-            result = check["result"]
-            if check["passed"]:
-                return sentence, result, target, context
-            attempts.append({
-                "sentence": sentence,
-                "reason_kind": check["reason_kind"],
-                "reason_detail": check["reason_detail"],
-                "non_ket_words": check["non_ket_words"],
-                "non_ket_count": check["non_ket_count"],
-            })
-            for w in check["non_ket_words"]:
-                if w not in seen_non_ket_words:
-                    seen_non_ket_words.append(w)
-            sentence = await _regen()
-
-        check = await validate_and_categorize(
-            llm_smart, sentence, target, age, repos, avoid_sentences
-        )
-        result = check["result"]
-        if check["passed"]:
-            return sentence, result, target, context
-        attempts.append({
-            "sentence": sentence,
-            "reason_kind": check["reason_kind"],
-            "reason_detail": check["reason_detail"],
-            "non_ket_words": check["non_ket_words"],
-            "non_ket_count": check["non_ket_count"],
-        })
-
-        overflow_attempts = [a for a in attempts if a["reason_kind"] == "non_ket_overflow"]
-        all_naturalness = bool(attempts) and all(
-            a["reason_kind"] == "naturalness" for a in attempts
+        sentence, result, attempts = await _generate_and_validate(
+            llm_smart, target, context, avoid_words, avoid_sentences,
+            age, profile, repos, config,
         )
 
-        if overflow_attempts:
-            best = min(reversed(overflow_attempts), key=lambda a: a["non_ket_count"])
-            sentence = best["sentence"]
-            result = await validate_sentence(sentence, repos, target=target)
-            logger.warning(
-                f"sentence validation: accepting non-KET overflow draft after "
-                f"{len(attempts)} attempts (non_ket_count={len(result.non_ket_words)}); "
-                f"sentence={sentence!r}"
-            )
-            return sentence, result, target, context
-        elif all_naturalness and not word_switched:
-            logger.info(
-                f"all {len(attempts)} attempts failed on naturalness; "
-                f"switching target word from '{target}'"
-            )
-            new_ref = await select_target_word(repos, profile, config)
-            if new_ref is None or new_ref.word == target:
-                logger.warning(
-                    f"could not find a different target word; "
-                    f"accepting final draft: {sentence!r}"
-                )
-                return sentence, result, target, context
-            target = new_ref.word
-            context = new_ref.context
+        overflow = await _handle_overflow_fallback(
+            attempts, target, context, repos
+        )
+        if overflow is not None:
+            return overflow
+
+        decision = await _switch_target_or_accept(
+            attempts, sentence, result, target, context, word_switched,
+            profile, repos, config,
+        )
+        if isinstance(decision, _RetryOuter):
+            target = decision.target
+            context = decision.context
             word_switched = True
             continue
-        else:
-            reasons = []
-            if check["non_ket_count"] > 1:
-                reasons.append(f"{check['non_ket_count']} non-KET word(s): {check['non_ket_words']}")
-            if check["is_duplicate"]:
-                reasons.append("duplicate of a recent sentence")
-            if check["is_target_split"]:
-                reasons.append(f"multi-word target '{target}' split apart")
-            if not reasons:
-                reasons.append(f"naturalness: {check['reason_detail']}")
-            logger.warning(
-                f"sentence validation failed after {len(attempts)} attempts; "
-                f"accepting current draft — reasons: {('; '.join(reasons)) or 'unknown'}; "
-                f"sentence={sentence!r}"
-            )
-            return sentence, result, target, context
+        return decision
 
 
 def apply_multiword_target_patch(

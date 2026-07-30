@@ -204,7 +204,7 @@ class KETPartnerAgent:
         target = state["target_word"]
         target_ctx = state.get("target_context") or ""
 
-        sentence, result, final_target, final_ctx = await generate_with_fallback(
+        gen_result = await generate_with_fallback(
             self.llm_smart,
             initial_target=state["target_word"],
             initial_context=target_ctx,
@@ -215,7 +215,10 @@ class KETPartnerAgent:
             repos=repos,
             config=self.config,
         )
-        target, target_ctx = final_target, final_ctx
+        sentence = gen_result.sentence
+        result = gen_result.result
+        target = gen_result.target
+        target_ctx = gen_result.context
 
         await repos.recent.append(sentence, window=window)
 
