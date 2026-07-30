@@ -53,7 +53,7 @@ def _make_config(repos, thread_id="t1"):
 async def test_graph_first_turn_generates_sentence(setup):
     repos = setup
     llm = _mock_llm_with_responses({})
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=repos._db)
+    agent = await build_agent(llm_flash=llm, llm_smart=llm)
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content="hi")]},
         config=_make_config(repos, thread_id="t1"),
@@ -71,7 +71,7 @@ async def test_graph_translation_correct_flow(setup):
         TranslationEval: TranslationEval(correct_translation="那只大猫在这里", wrong_words=[]),
     }
     llm = _mock_llm_with_responses(responses)
-    agent = await build_agent(llm_flash=llm, llm_smart=llm, db=repos._db)
+    agent = await build_agent(llm_flash=llm, llm_smart=llm)
 
     # Turn 1: first sentence
     await agent.ainvoke(

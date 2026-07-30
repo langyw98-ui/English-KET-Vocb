@@ -104,15 +104,13 @@ def wire_graph(builder: StateGraph, agent: KETPartnerAgent) -> None:
 async def build_agent(
     llm_flash: BaseChatModel,
     llm_smart: BaseChatModel,
-    db: Any = None,
     checkpointer: Any = None,
 ) -> CompiledStateGraph:
     """Factory: load_config -> KETPartnerAgent -> StateGraph -> wire_graph -> compile.
     Attaches .agent to the compiled graph for shutdown lifecycle.
 
-    The ``db`` argument is accepted for backward compatibility with existing
-    callers (main.py, app.py, tests) but is not used here: repos are sourced
-    per-call from ``config["configurable"]["repos"]`` inside node methods.
+    Repos are sourced per-call from ``config["configurable"]["repos"]`` inside
+    node methods, so no ``db`` parameter is needed here.
     """
     cfg = load_config()
     agent = KETPartnerAgent(llm_flash, llm_smart, cfg)
