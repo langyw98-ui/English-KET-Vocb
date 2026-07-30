@@ -190,16 +190,15 @@
 | `test_vocab_selector.py`<br>`test_word_meaning_lookup.py`<br>`test_mastery.py` | 🔀 合并 | `tests/flow/ket_partner/test_vocab_domain.py` |
 | `test_input_classifier.py`<br>`test_profile_summarizer.py`<br>`test_translation_evaluator.py`<br>`test_output_format.py` | 🔀 合并 | `tests/flow/ket_partner/test_dialogue_domain.py` |
 
-### 3. 死代码与杂项清理清单
+### 3. 冗余与无用数据文件清理清单
 
 1. **删除冗余 DB 文件**：
    - 彻底删除 `src/ket_partner.db`。
    - 移动根目录 `ket_partner.db` 到 `storage/db/ket_partner.db`。
 2. **清理报告文件**：
    - 将 `src/learning_report_*.md` 移动归档至 `storage/reports/`。
-3. **删除无用死代码**：
-   - 物理删除 `src/flow/agent.py`（仓库中全无引用的 `Autonomous`/`Consensus` 类）。
-   - 从 `src/flow/common.py` 中清理 `IS_RUNNING_IN_PYTEST`, `llm_plus`, `llm_doubao`, `doubao_api` 废弃符号。
+3. **保持 `src/flow/common.py` 现状**：
+   - `src/flow/common.py` 先前已清理完成，仅保留核心 `llm_max` 与 `llm_flash` 配置。
 
 ---
 
