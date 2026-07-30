@@ -5,7 +5,7 @@ import pytest
 
 from src.persistence.bootstrap import init_db
 from src.persistence.models import WordRef
-from src.persistence.repos import StatsRepo, VocabRepo
+from src.persistence.repos import LogRepo, ProfileRepo, StatsRepo, VocabRepo
 
 
 async def _init_vocab_repo(db_path: str, csv_path: str | None = None) -> VocabRepo:
@@ -27,6 +27,24 @@ async def _init_stats_repo(db_path: str, csv_path: str | None = None) -> StatsRe
     """
     db = await init_db(db_path, csv_path=csv_path)
     return StatsRepo(db, "default")
+
+
+async def _init_profile_repo(db_path: str) -> ProfileRepo:
+    """Open DB via bootstrap.init_db, wrap a ProfileRepo around it.
+
+    Same ownership contract as _init_vocab_repo: caller owns the connection.
+    """
+    db = await init_db(db_path, csv_path=None)
+    return ProfileRepo(db, "default")
+
+
+async def _init_log_repo(db_path: str) -> LogRepo:
+    """Open DB via bootstrap.init_db, wrap a LogRepo around it.
+
+    Same ownership contract as _init_vocab_repo: caller owns the connection.
+    """
+    db = await init_db(db_path, csv_path=None)
+    return LogRepo(db, "default")
 
 
 @pytest.mark.asyncio
@@ -394,3 +412,48 @@ class TestStatsRepo:
         dog_row = next(r for r in rows if r["word"] == "dog")
         assert dog_row["exposed_count"] == 0
         assert dog_row["status"] == "new"
+
+
+@pytest.mark.asyncio
+class TestProfileRepo:
+    async def test_profile_repo_init_creates_single_row(self, temp_db_path):
+        """ProfileRepo.get() returns a default profile when the database is empty.
+        Verifies that a fresh DB starts with zeroed counters and None topic."""
+        repo = await _init_profile_repo(temp_db_path)
+        profile = await repo.get()
+        assert profile["total_turns"] == 0
+        assert profile["in_refill_mode"] == 0
+        assert profile["current_topic"] is None
+
+
+@pytest.mark.asyncio
+class TestLogRepo:
+    async def test_last_ai_message_returns_none_when_no_ai_rows(self, temp_db_path):
+        """LogRepo.last_ai_message() returns None when no AI messages exist."""
+        repo = await _init_log_repo(temp_db_path)
+        assert await repo.last_ai_message() is None
+
+    async def test_last_ai_message_returns_latest_when_no_session_start(self, temp_db_path):
+        """Backward compat: databases populated before session_start was added
+        must still return the latest AI row when no marker exists."""
+        repo = await _init_log_repo(temp_db_path)
+        await repo.append("ai", "old sentence", words_used=["old"], turn_id=1)
+        await repo.append("ai", "newer sentence", words_used=["new"], turn_id=2)
+        result = await repo.last_ai_message()
+        assert result is not None
+        assert result["content"] == "newer sentence"
+
+    async def test_log_append_persists_target_words_with_context(self, temp_db_path):
+        """Spec §5.3: target_words is now List[{'word':..., 'context':...}]
+        so the cross-turn rehydration in init_state can recover both fields."""
+        repo = await _init_log_repo(temp_db_path)
+        await repo.append(
+            "ai",
+            "The smart kid.",
+            words_used=["the", "smart", "kid"],
+            target_words=[{"word": "smart", "context": "clever"}],
+            turn_id=1,
+        )
+        last = await repo.last_ai_message()
+        assert last is not None
+        assert last["target_words"] == [{"word": "smart", "context": "clever"}]

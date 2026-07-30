@@ -4,6 +4,7 @@
 Each Repo exposes a narrow async interface over a single table family.
 Repos (Task 7) aggregates the 5 per-user Repos for one request.
 """
+import json
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -267,3 +268,159 @@ class StatsRepo:
             }
             for r in rows
         ]
+
+
+class ProfileRepo:
+    """kid_profile + users tables — user profile read/write."""
+
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default") -> None:
+        self._db = db
+        self._user_id = user_id
+
+    async def get(self) -> dict:
+        async with self._db.execute(
+            "SELECT u.nickname, u.age, p.total_turns, p.weakness_words, p.dialogue_strategy, "
+            "p.in_refill_mode, p.last_new_word_turn, p.last_summary_turn, p.current_topic, p.updated_at "
+            "FROM kid_profile p "
+            "LEFT JOIN users u ON p.user_id = u.id "
+            "WHERE p.user_id = ?",
+            (self._user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return {
+                "nickname": "宝贝",
+                "age": 8,
+                "total_turns": 0,
+                "weakness_words": [],
+                "dialogue_strategy": None,
+                "in_refill_mode": 0,
+                "last_new_word_turn": 0,
+                "last_summary_turn": 0,
+                "current_topic": None,
+                "updated_at": None,
+            }
+        return {
+            "nickname": row[0] or "宝贝",
+            "age": row[1] if row[1] is not None else 8,
+            "total_turns": row[2] or 0,
+            "weakness_words": json.loads(row[3]) if row[3] else [],
+            "dialogue_strategy": row[4],
+            "in_refill_mode": row[5] or 0,
+            "last_new_word_turn": row[6] or 0,
+            "last_summary_turn": row[7] or 0,
+            "current_topic": row[8],
+            "updated_at": row[9],
+        }
+
+    async def update(self, **fields) -> None:
+        if not fields:
+            return
+        profile_allowed = {
+            "total_turns",
+            "weakness_words",
+            "dialogue_strategy",
+            "in_refill_mode",
+            "last_new_word_turn",
+            "last_summary_turn",
+            "current_topic",
+        }
+        user_allowed = {"nickname", "age"}
+
+        user_updates = {k: v for k, v in fields.items() if k in user_allowed}
+        if user_updates:
+            set_parts = [f"{k}=?" for k in user_updates]
+            values = list(user_updates.values())
+            values.append(self._user_id)
+            await self._db.execute(
+                f"UPDATE users SET {', '.join(set_parts)} WHERE id=?",
+                values,
+            )
+
+        profile_updates = {k: v for k, v in fields.items() if k in profile_allowed}
+        if profile_updates:
+            set_parts = []
+            values = []
+            for k, v in profile_updates.items():
+                if k == "weakness_words":
+                    v = json.dumps(v, ensure_ascii=False)
+                set_parts.append(f"{k}=?")
+                values.append(v)
+            set_parts.append("updated_at=?")
+            values.append(datetime.now(timezone.utc))
+            values.append(self._user_id)
+            await self._db.execute(
+                f"UPDATE kid_profile SET {', '.join(set_parts)} WHERE user_id=?",
+                values,
+            )
+        await self._db.commit()
+
+
+class LogRepo:
+    """conversation_log table — chat history with turn linkage."""
+
+    def __init__(self, db: aiosqlite.Connection, user_id: str = "default") -> None:
+        self._db = db
+        self._user_id = user_id
+
+    async def append(
+        self,
+        role: str,
+        content: str,
+        words_used: list[str] | None = None,
+        target_words: list[dict[str, str]] | None = None,
+        turn_id: int | None = None,
+    ) -> None:
+        await self._db.execute(
+            "INSERT INTO conversation_log (user_id, role, content, words_used, target_words, turn_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                self._user_id,
+                role,
+                content,
+                json.dumps(words_used or [], ensure_ascii=False),
+                json.dumps(target_words or [], ensure_ascii=False),
+                turn_id,
+            ),
+        )
+        await self._db.commit()
+
+    async def recent(self, limit: int = 5) -> list[dict]:
+        async with self._db.execute(
+            "SELECT role, content, words_used, target_words, turn_id, created_at "
+            "FROM conversation_log WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (self._user_id, limit),
+        ) as cur:
+            rows = list(await cur.fetchall())
+        rows.reverse()
+        return [
+            {
+                "role": r[0],
+                "content": r[1],
+                "words_used": json.loads(r[2]) if r[2] else [],
+                "target_words": json.loads(r[3]) if r[3] else [],
+                "turn_id": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    async def append_session_start(self) -> None:
+        await self.append("system", "session_start", words_used=[], target_words=[])
+
+    async def last_ai_message(self) -> dict | None:
+        sql = (
+            "SELECT content, words_used, target_words FROM conversation_log "
+            "WHERE role='ai' AND user_id=? AND id > COALESCE("
+            "    (SELECT MAX(id) FROM conversation_log WHERE role='system' AND content='session_start' AND user_id=?), 0"
+            ") ORDER BY id DESC LIMIT 1"
+        )
+        async with self._db.execute(sql, (self._user_id, self._user_id)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "content": row[0],
+            "words_used": json.loads(row[1]) if row[1] else [],
+            "target_words": json.loads(row[2]) if row[2] else [],
+        }
