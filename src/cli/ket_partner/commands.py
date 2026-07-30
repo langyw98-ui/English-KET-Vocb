@@ -44,6 +44,6 @@ class CommandHandler:
         """Use injected repos. No init_db, no private _db access."""
         cfg = load_config()
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = f"learning_report_{stamp}.md"
+        output_path = f"storage/reports/learning_report_{stamp}.md"
         await export_learning_report(output_path, self.repos, cfg)
         print(f"已导出学习报告到 {output_path}")

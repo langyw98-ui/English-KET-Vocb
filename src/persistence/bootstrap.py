@@ -6,6 +6,7 @@ default user + kid_profile, and optionally imports the KET vocabulary CSV.
 """
 import csv
 import sqlite3
+from pathlib import Path
 
 import aiosqlite
 
@@ -15,13 +16,14 @@ from src.persistence.schema import SCHEMA_SQL
 
 
 async def init_db(
-    db_path: str,
+    db_path: str = "storage/db/ket_partner.db",
     csv_path: str | None = None,
     default_nickname: str = "宝贝",
     default_age: int = 8,
 ) -> aiosqlite.Connection:
     """Open connection, set PRAGMAs, apply schema, seed default user +
     kid_profile, optional CSV import. Returns the raw connection."""
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     db = await aiosqlite.connect(db_path)
     db.row_factory = sqlite3.Row
     await db.execute("PRAGMA journal_mode=WAL;")

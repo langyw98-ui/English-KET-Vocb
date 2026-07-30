@@ -10,6 +10,6 @@ dist/
 # Dynamic Storage Directory
 storage/db/*.db
 storage/reports/*.md
-storage/logs/*.log
+storage/logs/*
 !storage/**/.gitkeep
 

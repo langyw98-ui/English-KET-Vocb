@@ -4,7 +4,7 @@ from typing import TextIO
 
 
 class ChatLogger:
-    def __init__(self, log_dir: str):
+    def __init__(self, log_dir: str = "storage/logs"):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._fp: TextIO | None = None

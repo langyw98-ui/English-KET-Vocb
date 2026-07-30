@@ -10,6 +10,8 @@ Key changes vs old:
 Single-writer notes (CLAUDE.md §三):
 - output_path file: only export_learning_report writes (single call site per request)
 """
+from pathlib import Path
+
 from flow.common import logger
 from flow.ket_partner.config import KetConfig
 from flow.ket_partner.persistence import KETPartnerRepos
@@ -18,19 +20,25 @@ from src.reporting.ket_partner.markdown import render_markdown
 
 
 async def export_learning_report(
-    output_path: str,
-    repos: KETPartnerRepos,
-    cfg: KetConfig,
+    output_path: str = "storage/reports/learning_report.md",
+    repos: KETPartnerRepos | None = None,
+    cfg: KetConfig | None = None,
     fmt: str = "markdown",
 ) -> str:
     """Pull stats → group → render → write file. Returns output_path."""
     if fmt != "markdown":
         raise ValueError(f"unsupported format: {fmt}")
+    if repos is None or cfg is None:
+        raise ValueError("repos and cfg must be provided")
+    out_p = Path(output_path)
+    if out_p.parent == Path("."):
+        out_p = Path("storage/reports") / out_p
+    out_p.parent.mkdir(parents=True, exist_ok=True)
     content = await render_report_text(repos, cfg)
-    with open(output_path, "w", encoding="utf-8") as f:  # noqa: ASYNC230
+    with open(out_p, "w", encoding="utf-8") as f:  # noqa: ASYNC230
         f.write(content)
-    logger.info(f"Exported learning report to {output_path}")
-    return output_path
+    logger.info(f"Exported learning report to {out_p}")
+    return str(out_p)
 
 
 async def render_report_text(

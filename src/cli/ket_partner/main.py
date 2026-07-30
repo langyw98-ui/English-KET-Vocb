@@ -18,7 +18,7 @@ from src.cli.ket_partner.commands import CommandHandler, ExitLoop
 from src.persistence.bootstrap import init_db
 from src.persistence.repos import Repos
 
-DEFAULT_DB = "ket_partner.db"
+DEFAULT_DB = "storage/db/ket_partner.db"
 DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "KET_vocabulary.csv")
 
 
@@ -38,7 +38,7 @@ async def main() -> None:
     await repos.log.append_session_start()
     agent = await build_agent(llm_flash, llm_max)
 
-    chat_logger = ChatLogger(log_dir="logs/chat")
+    chat_logger = ChatLogger(log_dir="storage/logs")
     chat_logger.start_session(nickname_kid)
     cmd_handler = CommandHandler(repos, chat_logger)
 

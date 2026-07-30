@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    DB_PATH: str = "ket_partner.db"
+    DB_PATH: str = "storage/db/ket_partner.db"
     CSV_PATH: str | None = None
     AUTH_MODE: Literal["disabled", "jwt"] = "disabled"
     KID_NICKNAME: str = "宝贝"
