@@ -3,8 +3,6 @@
 
 init_db opens a connection, runs migration, applies the schema, seeds the
 default user + kid_profile, and optionally imports the KET vocabulary CSV.
-The migrate_old_schema_if_needed call is a no-op stub in Task 3; Task 8
-replaces it with the real persistence.migration import.
 """
 import csv
 import sqlite3
@@ -12,6 +10,7 @@ import sqlite3
 import aiosqlite
 
 from flow.common import logger
+from src.persistence.migration import migrate_old_schema_if_needed
 from src.persistence.schema import SCHEMA_SQL
 
 
@@ -27,7 +26,7 @@ async def init_db(
     db.row_factory = sqlite3.Row
     await db.execute("PRAGMA journal_mode=WAL;")
     await db.execute("PRAGMA busy_timeout=5000;")
-    # Migration is a no-op in Task 3; Task 8 wires migrate_old_schema_if_needed.
+    await migrate_old_schema_if_needed(db)
     await db.executescript(SCHEMA_SQL)
     await db.execute(
         "INSERT OR IGNORE INTO users (id, nickname, age) VALUES ('default', ?, ?)",
