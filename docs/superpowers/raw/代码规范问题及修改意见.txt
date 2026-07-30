@@ -1,0 +1,135 @@
+以下是针对每个问题的逐一分析、确认结果及具体修复方案：                                                    
+  ──────                                                                                                    
+  ## 一、 关键问题（Critical / P0，必须修）                                                                 
+                                                                                                            
+  ### 1. KetIntent 类型契约不一致（CLAUDE.md §2.2）                                                         
+                                                                                                            
+  • 现象确认：                                                                                              
+      • src/flow/ket_partner/state.py:5 声明为 Literal["translate", ...]（写成了 "translate"）。            
+      • 但 dialogue_domain.py:29 的 LLM Pydantic Schema、vocab_domain.py:208 以及 graph.py:16               
+      的路由代码中全都在使用 "translation"。                                                                
+  • 风险：类型注解中 "translate" 是永远触发不到的死值，导致 mypy                                            
+  无法捕获隐式类型错配，路由存在静默失败隐患。                                                              
+  • 修复方案：将 state.py:5 的 KetIntent 修正为：                                                           
+    KetIntent = Literal["translation", "asks_meaning", "idk", "off_topic", "non_compliant"]                 
+                                                                                                            
+  ──────                                                                                                    
+  ### 2. LLM 异常元组混入代码 bug 类型（CLAUDE.md §1.5）                                                    
+                                                                                                            
+  • 现象确认：在 vocab_domain.py (L142, L176, L197)、dialogue_domain.py (L42, L85,                          
+  L204)、sentence_domain.py (L186, L360)、agent.py (L61) 9 处跨边界捕获中，均写成了：                       
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:                        
+                                                                                                            
+  • 风险：ValueError / AttributeError / TypeError 是典型的代码                                              
+  bug（如空指针、字段访问错位），捕获它们会将真正的代码 bug 误当成 "LLM 网络失败" 静默兜底。                
+  • 修复方案：瘦身异常元组，移除代码 bug 类型，仅保留外部 IO/网络/超时异常：                                
+    except (TimeoutError, RuntimeError) as e:  # 或外部 SDK 的特定 APIError                                 
+                                                                                                            
+  ──────                                                                                                    
+  ### 3. src/api/app.py:70, 77 裸 except Exception（CLAUDE.md §1.1）                                        
+                                                                                                            
+  • 现象确认：app.py 的应用关闭（shutdown）路径中两处直接写了 except Exception as e:。                      
+  • 修复方案：显式捕获可能发生的具体关闭异常：                                                              
+    except (RuntimeError, OSError, asyncio.TimeoutError) as e:                                              
+                                                                                                            
+  ──────                                                                                                    
+  ### 4. sentence_domain.py:444 跨边界裸 4 元组（CLAUDE.md §2.11）                                          
+                                                                                                            
+  • 现象确认：generate_with_fallback(...) 签名返回 tuple[str, ValidationResult, str,                        
+  str]。调用方只能按索引 res[0], res[1] 访问，顺序颠倒无法被编译器识别。                                    
+  • 修复方案：定义带命名字段的只读 dataclass：                                                              
+    @dataclass(frozen=True, slots=True)                                                                     
+    class SentenceGenerationResult:                                                                         
+        sentence: str                                                                                       
+        result: ValidationResult                                                                            
+        target: str                                                                                         
+        context: str                                                                                        
+                                                                                                            
+  ──────                                                                                                    
+  ### 5. src/flow/common.py:57-82 LLM 服务硬编码无 DI（CLAUDE.md §10.8 / §10.9）                            
+                                                                                                            
+  • 现象确认：llm_max 和 llm_flash 作为模块级全局变量直接硬编码实例化，业务代码依赖注入困难，单测只能       
+  monkeypatch 全局变量。                                                                                    
+  • 修复方案：                                                                                              
+      1. 定义 LlmService 依赖包装类或接口 Protocol。                                                        
+      2. 在 build_agent 工厂与依赖注入层传入 llm_service: LlmService | None = None，默认实例化全局实现。    
+                                                                                                            
+  ──────                                                                                                    
+  ### 6. sentence_domain.py:552-576 修改入参（CLAUDE.md §3.1）                                              
+                                                                                                            
+  • 现象确认：apply_multiword_target_patch(target, sentence, result) 直接在函数内部修改了 result.           
+  words_used 和 result.non_ket_words 的列表。                                                               
+  • 修复方案：遵守纯函数原则，返回复制并更新后的 ValidationResult 新对象：                                  
+    def apply_multiword_target_patch(target: str, sentence: str, result: ValidationResult) ->               
+  ValidationResult:                                                                                         
+        # ... 计算 new_words_used 和 new_non_ket_words                                                      
+        return result.model_copy(update={"words_used": new_words_used, "non_ket_words":                     
+  new_non_ket_words})                                                                                       
+                                                                                                            
+  ──────                                                                                                    
+  ### 7. sentence_domain.py:434-550 超长函数（CLAUDE.md §4.1）                                              
+                                                                                                            
+  • 现象确认：generate_with_fallback 达到 117 行，混杂了造句生成、重试、溢出降级与换词策略。                
+  • 修复方案：拆分为 3 个职责单一的子函数：                                                                 
+      • _generate_with_retry(...)                                                                           
+      • _handle_overflow_fallback(...)                                                                      
+      • _switch_target_or_accept(...)                                                                       
+                                                                                                            
+  ──────                                                                                                    
+  ### 8. src/flow/ket_partner/agent.py 浅层透传（CLAUDE.md §10.3 / Middleman）                              
+                                                                                                            
+  • 现象确认：KETPartnerAgent 类中 12 个节点方法全是 return await nodes.xxx(state, config,                  
+  self)，为纯粹的浅层薄壳。                                                                                 
+  • 修复方案：                                                                                              
+      • 将后台总结逻辑与资源释放方法抽离，KETPartnerAgent 仅保留为轻量级上下文/依赖持有者（或在 graph.py    
+      中直接绑定节点）。                                                                                    
+                                                                                                            
+  ──────                                                                                                    
+  ## 二、 主要问题（Major / P1，应该修）                                                                    
+                                                                                                            
+  ### 9. state.py Docstring 写入者与实际代码不符（CLAUDE.md §3.3）                                          
+                                                                                                            
+  • 现象确认：                                                                                              
+      • L14 写 intent 由 classify_input_node 写入，实为 classify_intent_node。                              
+      • L26-27 写 profile_strategy 由不存在的 profile_summarizer_node 写入，实为 init_state。               
+      • L22-28 缺少多写入点 (init_state + persist_turn_node / generate_sentence_node) 的显式声明。          
+  • 修复方案：重写 BTPKetState 的 docstring 逐字段写明真实 single-writer / multi-writer。                   
+  ──────                                                                                                    
+  ### 10. 魔法字符串内联分支（CLAUDE.md §4.3）                                                              
+                                                                                                            
+  • 现象确认：graph.py (L16, L35)、vocab_domain.py (L208)、dialogue_domain.py (L220) 中散落 if intent ==    
+  "translation": 等硬编码字符串比较。                                                                       
+  • 修复方案：定义模块级常量字典或枚举表处理路由查表，消除硬编码 if/elif 字符串比较。                       
+  ──────                                                                                                    
+  ### 11. src/api/routes/chat.py:19-82 chat 函数多职责（CLAUDE.md §4.1）                                    
+                                                                                                            
+  • 现象确认：64 行函数同时包含请求校验、Agent 唤醒、异常兜底与 JSON 响应组装。                             
+  • 修复方案：拆分为 _invoke_agent(...) 与 _handle_chat_error(...) 辅助函数。                               
+  ──────                                                                                                    
+  ### 12. Fallback 单测缺少 mock 调用断言（CLAUDE.md §6.4）                                                 
+                                                                                                            
+  • 现象确认：在 test_vocab_domain.py L157、test_dialogue_domain.py L60/103/172、test_sentence_domain.py    
+  L738 等 6 处异常测试中，仅断言了兜底返回值，没有断言 mock.ainvoke.assert_awaited_once()。                 
+  • 修复方案：为这 6 处测试补充 assert_awaited_once() / assert_called_once()                                
+  断言，防止兜底逻辑因被测函数内部 Bug 静默假通过。                                                         
+  ──────                                                                                                    
+  ## 三、 次要问题（Minor / P2，建议修）                                                                    
+                                                                                                            
+   序号 │ 目标位置               │ 问题说明                             │ 修复方案
+  ──────┼────────────────────────┼──────────────────────────────────────┼────────────────────────────────   
+   13   │ chat_logger.py:28      │ open() 后无 with / try-finally       │ 改用 with open(...)
+   14   │ exporter.py:38         │ async 函数中使用同步 open()          │ 替换为 aiofiles.open() 或
+        │                        │                                      │ asyncio.to_thread
+   15   │ bootstrap.py:51        │ async _import_csv 中同步 open + csv  │ 包裹在 asyncio.to_thread 中       
+   16   │ flow/common.py:30      │ _resolve_dashscope_api_key 中同步读  │ Path.exists() +
+        │                        │ yaml                                 │ 同步读无碍，但可加异常防护        
+   17   │ sentence_domain.py:207 │ 模块级同步加载 JSON                  │ 改为 lazy 初始化函数调用
+   18   │ test_chat_real_llm.py: │ ruff 报 F401 未使用 import os        │ 移除 import os
+        │ 1                      │                                      │
+   19   │ vocab_domain.py:208    │ state.get("intent") 未判空直接 ==    │ 增加非空与默认处理
+   20   │ dialogue_domain.py:217 │ format_output_text 缺少显式完备分支  │ 补齐全 KetIntent 枚举分支
+        │                        │                                      │ coverage
+   21   │ repos.py:338           │ if not fields: return 静默 no-op     │ 增加 logger.warning 日志记录      
+   22   │ nodes.py:111           │ 循环中修改 entry 临时变量            │ 直接构造新列表/实例
+   23   │ config.py:45           │ 同步 open + json.load                │ 保持配置加载规范
+   24   │ bootstrap.py:55        │ CSV 导入未校验 strip() 非空          │ 补齐 .strip() 非空校验
