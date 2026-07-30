@@ -1,12 +1,23 @@
 import asyncio
 
+import openai
 from langchain_core.runnables import RunnableConfig
+from pydantic import ValidationError
 
 from flow.common import logger
 from flow.ket_partner import nodes
 from flow.ket_partner.dialogue_domain import run_profile_summary
 from flow.ket_partner.persistence import KETPartnerRepos
 from flow.ket_partner.state import BTPKetState
+
+# _run_summary_safe 后台任务的可重试外部失败类型。
+# 严格按 CLAUDE.md §1.5:只含具体外部失败,不含 ValueError/AttributeError/TypeError
+# 等代码 bug 类型——那些必须直接暴露被测试捕获。
+_LLM_RETRYABLE: tuple[type[BaseException], ...] = (
+    openai.APIError,          # openai SDK 的所有 API 异常基类(APITimeoutError/APIConnectionError/RateLimitError 等)
+    asyncio.TimeoutError,     # asyncio.wait_for 超时
+    ValidationError,          # pydantic Schema 校验失败(LLM 返回畸形结构)
+)
 
 
 class KETPartnerAgent:
@@ -58,7 +69,7 @@ class KETPartnerAgent:
     async def _run_summary_safe(self, repos: KETPartnerRepos) -> None:
         try:
             await run_profile_summary(self.llm_smart, repos)
-        except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        except _LLM_RETRYABLE as e:
             logger.warning(f"background summary failed: {e}", exc_info=True)
 
     async def aclose(self, timeout: float = 2.0) -> None:
