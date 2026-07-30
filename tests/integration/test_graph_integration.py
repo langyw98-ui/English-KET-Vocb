@@ -633,7 +633,7 @@ async def test_evaluate_keeps_non_ket_word_in_display_but_skips_stats(setup, mon
     saw "你的翻译有误:" with no itemized correction for the non-KET word,
     even though they explicitly got it wrong.
     """
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.dialogue_domain import WrongWord
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
@@ -1156,7 +1156,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     player'), the retry loop must detect the missing contiguous substring
     and record the failure in `prior_attempts` with reason_kind="target_split"
     so the next regen's prompt surfaces the structural requirement."""
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
@@ -1231,7 +1231,7 @@ async def test_generate_node_accepts_placeholder_target_with_substitution(setup,
     Fix: agent.py uses target_in_sentence which compiles a pattern that
     treats the placeholder as a 1-3 word substitution slot.
     """
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
@@ -1331,7 +1331,7 @@ async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
     accepted (no regen) and that word's context meaning is appended so
     the kid can still translate the sentence.
     """
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
@@ -1383,7 +1383,7 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
     must accept the sentence and annotate ALL non-KET words so the kid has
     a chance to translate.
     """
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import ValidationResult
 
@@ -1421,7 +1421,7 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
 async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
     """A clean all-KET sentence must NOT trigger the lookup or render any
     annotation lines."""
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
@@ -1807,7 +1807,7 @@ async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
     agent must accept the one with the FEWEST non-KET words (least bad), not
     the final draft. Implements the user spec: '如果存在非KET单词数量超限的
     情况，应该输出这个句子' — picking the least-bad tolerable failure."""
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import ValidationResult
 
@@ -1863,7 +1863,7 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
     cycle. The kid sees the new word's sentence, NOT any of the original
     word's failed attempts. Implements the user spec: '如果3次都是因为表达
     不自然，则应该换个词重新尝试生成'."""
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
@@ -1950,7 +1950,7 @@ async def test_word_switch_only_once(setup, monkeypatch):
     """Word switch is bounded to ONCE. If the switched-to word also fails all
     3 attempts on naturalness, the agent must NOT switch again — it accepts
     the final draft. This prevents infinite loops in the fallback path."""
-    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import agent as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
     from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
