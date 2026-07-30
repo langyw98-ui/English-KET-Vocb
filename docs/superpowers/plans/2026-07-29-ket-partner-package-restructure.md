@@ -29,7 +29,7 @@ Apply to every task; do not violate.
 
 ## Phase A: persistence package (NEW)
 
-Builds the new top-level `src/persistence/` package alongside the existing `flow/ket_partner/db.py`. Once Phase A–F all land, `db.py` is deleted (Task 24).
+Builds the new top-level `src/persistence/` package alongside the existing `flow/ket_partner/db.py`. Once Phase A–F all land, `db.py` is deleted (Task 25).
 
 ### Task 1: Scaffold persistence package + schema.py
 
@@ -312,10 +312,201 @@ git commit -m "feat(persistence): add models.py with WordRef, MASTERY_CAP, deriv
 
 ---
 
-### Task 3: persistence/repos.py — VocabRepo
+### Task 3: persistence/bootstrap.py (init_db + _import_csv)
+
+> **Why this is Task 3, not Task 7:** every later per-Repo task (Tasks 4–7)
+> has tests that import `init_db` to construct a real DB. Python has no
+> forward declaration — moving `bootstrap.py` first breaks the cycle.
 
 **Files:**
-- Create: `src/persistence/repos.py` (starts here, expanded in A4–A6)
+- Create: `src/persistence/bootstrap.py`
+- Modify: `src/persistence/__init__.py` (re-export `init_db` only; full re-exports land in Task 8)
+- Create: `tests/persistence/test_bootstrap.py`
+
+**Interfaces:**
+- Produces: `persistence.bootstrap.init_db(db_path, csv_path=None, default_nickname="宝贝", default_age=8) -> aiosqlite.Connection`
+- Produces: `persistence.bootstrap._import_csv(db, csv_path) -> None` (private)
+- **Does NOT migrate** `migrate_old_schema_if_needed` here — that lands in Task 8. For Task 3 only, `init_db` calls a temporary inline no-op for migration; Task 8 replaces it with the real `migrate_old_schema_if_needed` import.
+
+> **Test import prefix rule (applies to all Tasks 3–8):** every test file
+> under `tests/persistence/` MUST use `from src.persistence.<module> import ...`
+> (NOT `from persistence.<module> import ...`). The `tests/persistence/__init__.py`
+> created in Task 1 shadows `src/persistence/` because pytest's
+> `pythonpath = . src` puts `tests/` ahead of `src/`. This was empirically
+> verified at Task 1 (`test_schema.py` / `test_models.py` both use the
+> `src.` prefix). Production source under `src/` uses the plain
+> `from persistence.<module> import ...` form (no `src.` prefix).
+
+- [ ] **Step 1: Write the failing test**
+
+Migrate 4 CSV/init tests from `tests/ket_partner/test_db.py` into `tests/persistence/test_bootstrap.py`. Change the import to `from src.persistence.bootstrap import init_db`. Convert module-level `async def test_...(temp_db_path):` to the same form (no class wrapper needed for bootstrap tests). Each test body is copied verbatim, but replace `await _init_repos(temp_db_path, csv_path=...)` with the equivalent `db = await init_db(temp_db_path, csv_path=...)` and access tables via the raw `db` connection (these tests predate the Repos aggregator).
+
+```python
+# tests/persistence/test_bootstrap.py
+import pytest
+
+from src.persistence.bootstrap import init_db
+
+
+@pytest.mark.asyncio
+async def test_init_db_creates_tables(temp_db_path):
+    # Copy body from tests/ket_partner/test_db.py:52-66 verbatim.
+    # Body already uses `db = await init_db(...)` and raw `db.execute(...)`.
+    ...
+
+
+@pytest.mark.asyncio
+async def test_import_csv_creates_one_row_per_context(temp_db_path):
+    # Copy body from tests/ket_partner/test_db.py:105-129 verbatim, but
+    # replace `repos = await _init_repos(temp_db_path, csv_path=csv_path)`
+    # with `db = await init_db(temp_db_path, csv_path=csv_path)` and
+    # `repos.vocab._db.execute(...)` with `db.execute(...)`.
+    ...
+
+
+@pytest.mark.asyncio
+async def test_import_csv_handles_bom(temp_db_path):
+    # Copy body from tests/ket_partner/test_db.py:133-147 verbatim, but
+    # replace `repos = await _init_repos(...)` with `db = await init_db(...)`
+    # and `repos.vocab.get_ket_word("cat")` with a raw SQL lookup:
+    #   async with db.execute(
+    #       "SELECT word FROM ket_vocabulary WHERE word='cat' LIMIT 1"
+    #   ) as cur:
+    #       row = await cur.fetchone()
+    #   assert row is not None
+    ...
+
+
+@pytest.mark.asyncio
+async def test_import_csv_links_topic_to_specific_context(temp_db_path):
+    # Copy body from tests/ket_partner/test_db.py:151-167 verbatim, but
+    # replace `repos = await _init_repos(...)` with `db = await init_db(...)`
+    # and `repos.vocab.get_topics_for_word(...)` with raw SQL:
+    #   async with db.execute(
+    #       "SELECT topic FROM ket_vocab_topics WHERE word=? AND context=? "
+    #       "ORDER BY topic",
+    #       (word, context),
+    #   ) as cur:
+    #       rows = await cur.fetchall()
+    #   topics = [r[0] for r in rows]
+    ...
+```
+
+For each `...`, follow the per-test instructions above. The four tests must NOT import `Repos` or any Repo class — they exercise `init_db` + `_import_csv` directly via the raw `aiosqlite.Connection`.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+`D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_bootstrap.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'persistence.bootstrap'`
+
+- [ ] **Step 3: Create bootstrap.py + update __init__.py**
+
+```python
+# src/persistence/bootstrap.py
+"""Composition-root DB initialization. Not for per-request use.
+
+init_db opens a connection, runs migration, applies the schema, seeds the
+default user + kid_profile, and optionally imports the KET vocabulary CSV.
+The migrate_old_schema_if_needed call is a no-op stub in Task 3; Task 8
+replaces it with the real persistence.migration import.
+"""
+import csv
+import sqlite3
+
+import aiosqlite
+
+from flow.common import logger
+from persistence.schema import SCHEMA_SQL
+
+
+async def init_db(
+    db_path: str,
+    csv_path: str | None = None,
+    default_nickname: str = "宝贝",
+    default_age: int = 8,
+) -> aiosqlite.Connection:
+    """Open connection, set PRAGMAs, apply schema, seed default user +
+    kid_profile, optional CSV import. Returns the raw connection."""
+    db = await aiosqlite.connect(db_path)
+    db.row_factory = sqlite3.Row
+    await db.execute("PRAGMA journal_mode=WAL;")
+    await db.execute("PRAGMA busy_timeout=5000;")
+    # Migration is a no-op in Task 3; Task 8 wires migrate_old_schema_if_needed.
+    await db.executescript(SCHEMA_SQL)
+    await db.execute(
+        "INSERT OR IGNORE INTO users (id, nickname, age) VALUES ('default', ?, ?)",
+        (default_nickname, default_age),
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO kid_profile (user_id, total_turns) VALUES ('default', 0)",
+    )
+    await db.commit()
+    if csv_path:
+        await _import_csv(db, csv_path)
+    return db
+
+
+async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:
+    """Import KET vocabulary from CSV. Private — only bootstrap.py calls this.
+
+    Copy body verbatim from src/flow/ket_partner/db.py:737-762.
+    """
+    with open(csv_path, "r", encoding="utf-8-sig") as f:  # noqa: ASYNC230
+        reader = csv.DictReader(f)
+        count = 0
+        for row in reader:
+            word = (row.get("word") or "").strip()
+            pos = (row.get("part_of_speech") or "").strip()
+            topic_raw = (row.get("topic") or "").strip()
+            context = (row.get("context") or "").strip()
+            if not word:
+                continue
+            topics = [t.strip() for t in topic_raw.split(";") if t.strip()]
+            await db.execute(
+                "INSERT OR IGNORE INTO ket_vocabulary (word, context, pos, is_seed) "
+                "VALUES (?, ?, ?, 0)",
+                (word, context, pos),
+            )
+            for t in topics:
+                await db.execute(
+                    "INSERT OR IGNORE INTO ket_vocab_topics (word, context, topic) "
+                    "VALUES (?, ?, ?)",
+                    (word, context, t),
+                )
+            count += 1
+        await db.commit()
+        logger.info(f"Imported {count} rows from {csv_path}")
+```
+
+```python
+# src/persistence/__init__.py (Task 3 increment: re-export init_db only)
+"""Top-level persistence package.
+
+Re-exports grow task-by-task. Full set lands in Task 8.
+"""
+from persistence.bootstrap import init_db
+
+__all__ = ["init_db"]
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+`D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_bootstrap.py -v`
+Expected: 4 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/persistence/bootstrap.py src/persistence/__init__.py tests/persistence/test_bootstrap.py
+git commit -m "feat(persistence): add bootstrap.init_db + _import_csv; re-export init_db"
+```
+
+---
+
+### Task 4: persistence/repos.py — VocabRepo
+
+**Files:**
+- Create: `src/persistence/repos.py` (starts here, expanded in Tasks 5–7)
 - Create: `tests/persistence/test_repos.py` (starts here)
 
 **Interfaces:**
@@ -323,50 +514,68 @@ git commit -m "feat(persistence): add models.py with WordRef, MASTERY_CAP, deriv
 
 - [ ] **Step 1: Write the failing test**
 
-Move VocabRepo-related tests from `tests/ket_partner/test_db.py` into `tests/persistence/test_repos.py` under a `TestVocabRepo` class. Change the import:
+Move VocabRepo-related tests from `tests/ket_partner/test_db.py` into `tests/persistence/test_repos.py` under a `TestVocabRepo` class. Test imports use the `src.persistence.<module>` prefix (see Task 3 rule). Tests construct `VocabRepo(db, "default")` directly — no `Repos` aggregator yet (that lands in Task 7).
 
 ```python
 # tests/persistence/test_repos.py
 import pytest
 
-from persistence.models import WordRef
-from persistence.repos import VocabRepo, Repos  # Repos added in A6
-from persistence.bootstrap import init_db  # added in A7; for now stub
+from src.persistence.bootstrap import init_db
+from src.persistence.models import WordRef
+from src.persistence.repos import VocabRepo
 
 
-async def _init_repos(db_path: str, csv_path: str | None = None) -> Repos:
+async def _init_vocab_repo(db_path: str, csv_path: str | None = None) -> VocabRepo:
+    """Open DB via bootstrap.init_db, wrap a VocabRepo around it.
+
+    Each test owns the connection and must close it in a finally block,
+    OR rely on the temp_db_path fixture's cleanup (file-based DB). Tests
+    that need stats/log/recent access should NOT use this helper — they
+    belong to later tasks.
+    """
     db = await init_db(db_path, csv_path=csv_path)
-    return Repos.for_user(db, "default")
+    return VocabRepo(db, "default")
 
 
 @pytest.mark.asyncio
 class TestVocabRepo:
     async def test_get_ket_word_returns_wordref_with_context(self, temp_db_path):
-        # Copy body from tests/ket_partner/test_db.py:422-438 verbatim
+        # Copy body from tests/ket_partner/test_db.py:422-438 verbatim, but
+        # replace `repos = await _init_repos(temp_db_path, csv_path=csv_path)`
+        # with `repo = await _init_vocab_repo(temp_db_path, csv_path=csv_path)`
+        # and `repos.vocab.get_ket_word(...)` with `repo.get_ket_word(...)`.
+        # The `from flow.ket_partner.db import WordRef` line becomes a no-op
+        # (WordRef is already imported at module top from src.persistence.models).
         ...
 
     async def test_get_ket_word_returns_none_when_context_mismatch(self, temp_db_path):
-        # Copy body from tests/ket_partner/test_db.py:440-453 verbatim
+        # Copy body from tests/ket_partner/test_db.py:440-453 verbatim, with
+        # the same `_init_repos` → `_init_vocab_repo` and `repos.vocab.` → `repo.`
+        # transforms. Drop the inline `from flow.ket_partner.db import WordRef`.
         ...
 
     async def test_get_ket_word_any_context_prefers_default(self, temp_db_path):
-        # Copy body from tests/ket_partner/test_db.py:454-474 verbatim
+        # Copy body from tests/ket_partner/test_db.py:454-474 verbatim, same transform.
         ...
 
     async def test_get_ket_word_any_context_returns_first_when_no_default(self, temp_db_path):
-        # Copy body from tests/ket_partner/test_db.py:475-494 verbatim
+        # Copy body from tests/ket_partner/test_db.py:475-494 verbatim, same transform.
         ...
 
     async def test_words_in_topic_without_stats_returns_wordref(self, temp_db_path):
-        # Copy body from tests/ket_partner/test_db.py:495-516 verbatim
-        ...
-
-    async def test_import_csv_splits_multi_topic(self, temp_db_path):
-        # Copy body from tests/ket_partner/test_db.py:81-104 verbatim (exercises get_topics_for_word)
+        # Copy body from tests/ket_partner/test_db.py:495-513 verbatim, same transform.
         ...
 ```
 
-For each `...` body, copy verbatim from the cited test_db.py lines. The test signatures are `async def test_...(self, temp_db_path):` instead of module-level `async def test_...(temp_db_path):` — adjust indentation.
+**Do NOT migrate** `test_import_csv_splits_multi_topic` (l.81 of test_db.py) here — it exercises CSV-import semantics and now lives in `tests/persistence/test_bootstrap.py` from Task 3. (Task 3's brief lists only 4 tests; if you wish to add a 5th CSV test, add it to test_bootstrap.py, not test_repos.py.)
+
+For each `...` body, copy verbatim from the cited test_db.py lines, then apply two transforms:
+1. `repos = await _init_repos(temp_db_path, csv_path=...)` → `repo = await _init_vocab_repo(temp_db_path, csv_path=...)`
+2. `repos.vocab.<method>(...)` → `repo.<method>(...)`
+
+Also delete any inline `from flow.ket_partner.db import WordRef` (WordRef is module-level imported from `src.persistence.models`).
+
+The test signatures are `async def test_...(self, temp_db_path):` instead of module-level `async def test_...(temp_db_path):` — adjust indentation by 4 spaces.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -382,15 +591,13 @@ Copy `VocabRepo` class verbatim from `src/flow/ket_partner/db.py:127-214`:
 """Per-user Repo classes for the KET partner persistence layer.
 
 Each Repo exposes a narrow async interface over a single table family.
-Repos (Task 6) aggregates the 5 per-user Repos for one request.
+Repos (Task 7) aggregates the 5 per-user Repos for one request.
 """
-import json
-import re
-from datetime import datetime, timezone
+from typing import Optional  # noqa: F401  # imported for parity with db.py; remove in Task 7 cleanup if unused
 
 import aiosqlite
 
-from persistence.models import MASTERY_CAP, WordRef, derive_status
+from persistence.models import WordRef  # MASTERY_CAP, derive_status imported when StatsRepo lands (Task 5)
 
 
 class VocabRepo:
@@ -485,12 +692,10 @@ class VocabRepo:
         return row[0] if row else 0
 ```
 
-(Header stub `Repos` and `init_db` references stay — A6 / A7 fill them.)
-
 - [ ] **Step 4: Run test to verify it passes**
 
 `D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_repos.py::TestVocabRepo -v`
-Expected: 6 passed (TestVocabRepo exercises 6 functions; one of them is `test_import_csv_splits_multi_topic` which is technically a bootstrap test — leave it here only if you keep it; otherwise move to test_bootstrap.py in A7).
+Expected: 5 passed (TestVocabRepo exercises 5 functions).
 
 - [ ] **Step 5: Commit**
 
@@ -501,11 +706,11 @@ git commit -m "feat(persistence): add VocabRepo + test_repos.TestVocabRepo"
 
 ---
 
-### Task 4: persistence/repos.py — StatsRepo (Option B restructure)
+### Task 5: persistence/repos.py — StatsRepo (Option B restructure)
 
 **Files:**
-- Modify: `src/persistence/repos.py` (append StatsRepo)
-- Modify: `tests/persistence/test_repos.py` (append TestStatsRepo)
+- Modify: `src/persistence/repos.py` (append StatsRepo; add MASTERY_CAP + derive_status imports)
+- Modify: `tests/persistence/test_repos.py` (append TestStatsRepo + stats helper)
 
 **Interfaces:**
 - Produces: `StatsRepo` with `get` / `apply_delta` / `learning_count` / `oldest_learning_word` / `increment_exposed` / `list_all_with_vocab` (NEW)
@@ -514,7 +719,7 @@ git commit -m "feat(persistence): add VocabRepo + test_repos.TestVocabRepo"
 
 - [ ] **Step 1: Write the failing test**
 
-Add `TestStatsRepo` to `tests/persistence/test_repos.py`. Copy these from `tests/ket_partner/test_db.py`:
+Add `TestStatsRepo` to `tests/persistence/test_repos.py`. Also add a `_init_stats_repo` helper next to `_init_vocab_repo`. Copy these test bodies from `tests/ket_partner/test_db.py`:
 - `test_stats_repo_apply_delta_creates_row` (l.180)
 - `test_stats_repo_apply_delta_floor_at_zero` (l.195)
 - `test_stats_repo_apply_delta_caps_mastery_at_cap` (l.208)
@@ -535,31 +740,49 @@ Add `TestStatsRepo` to `tests/persistence/test_repos.py`. Copy these from `tests
 
 **Delete** (do NOT migrate): `test_stats_count_and_list_by_category` (l.628) — Option B removes the methods under test.
 
-Add ONE new test for `list_all_with_vocab`:
+For each migrated body, apply three transforms:
+1. `repos = await _init_repos(temp_db_path, csv_path=...)` → `repo = await _init_stats_repo(temp_db_path, csv_path=...)`
+2. `repos.stats.<method>(...)` → `repo.<method>(...)`
+3. `repos.vocab._db.execute(...)` and `repos.stats._db.execute(...)` → `repo._db.execute(...)` (the stats repo's `_db` is the same connection)
+
+Drop any inline `from flow.ket_partner.db import WordRef` (WordRef is module-level imported).
 
 ```python
+# tests/persistence/test_repos.py (append)
+from src.persistence.repos import StatsRepo
+
+
+async def _init_stats_repo(db_path: str, csv_path: str | None = None) -> StatsRepo:
+    """Open DB via bootstrap.init_db, wrap a StatsRepo around it.
+
+    Same ownership contract as _init_vocab_repo: caller owns the connection.
+    """
+    db = await init_db(db_path, csv_path=csv_path)
+    return StatsRepo(db, "default")
+
+
 @pytest.mark.asyncio
 class TestStatsRepo:
-    # ... (migrated tests above) ...
+    # ... (migrated tests above, each with the three transforms) ...
 
     async def test_list_all_with_vocab_returns_all_words(self, temp_db_path):
         """list_all_with_vocab returns every ket_vocabulary row LEFT JOINed
         with vocab_stats — including words the kid never practiced. Replaces
         the old exporter's repos.stats._db.execute private access."""
-        repos = await _init_repos(temp_db_path, csv_path=None)
+        repo = await _init_stats_repo(temp_db_path, csv_path=None)
         # Manually insert two vocab rows; no stats yet
-        await repos.vocab._db.execute(
+        await repo._db.execute(
             "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES (?, ?, ?, 0)",
             ("cat", "", "n"),
         )
-        await repos.vocab._db.execute(
+        await repo._db.execute(
             "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES (?, ?, ?, 0)",
             ("dog", "", "n"),
         )
-        await repos.stats.apply_delta("cat", delta=1, exposed=True)
-        await repos.vocab._db.commit()
+        await repo.apply_delta("cat", delta=1, exposed=True)
+        await repo._db.commit()
 
-        rows = await repos.stats.list_all_with_vocab()
+        rows = await repo.list_all_with_vocab()
         words = {r["word"] for r in rows}
         assert words == {"cat", "dog"}
         cat_row = next(r for r in rows if r["word"] == "cat")
@@ -577,7 +800,14 @@ Expected: FAIL — `AttributeError: 'StatsRepo' object has no attribute 'list_al
 
 - [ ] **Step 3: Append StatsRepo to repos.py**
 
-Adapt `StatsRepo` from `src/flow/ket_partner/db.py:217-422`. **Delete** `_category_where_sql`, `count_by_category`, `list_by_category` (lines 349-422). **Drop** `config` param + `self._config` field + `if config is None: from flow.ket_partner.config import load_config` block. **Add** `list_all_with_vocab`:
+First update the top-of-file import to bring in `MASTERY_CAP` and `derive_status`:
+
+```python
+# src/persistence/repos.py (edit the existing import line)
+from persistence.models import MASTERY_CAP, WordRef, derive_status
+```
+
+Then append `StatsRepo`. Adapt from `src/flow/ket_partner/db.py:217-422`. **Delete** `_category_where_sql`, `count_by_category`, `list_by_category` (lines 349-422). **Drop** `config` param + `self._config` field + `if config is None: from flow.ket_partner.config import load_config` block. **Add** `list_all_with_vocab`:
 
 ```python
 # src/persistence/repos.py (append)
@@ -679,7 +909,7 @@ git commit -m "feat(persistence): add StatsRepo with list_all_with_vocab; drop c
 
 ---
 
-### Task 5: persistence/repos.py — ProfileRepo + LogRepo
+### Task 6: persistence/repos.py — ProfileRepo + LogRepo
 
 **Files:**
 - Modify: `src/persistence/repos.py`
@@ -691,7 +921,7 @@ git commit -m "feat(persistence): add StatsRepo with list_all_with_vocab; drop c
 
 - [ ] **Step 1: Write the failing test**
 
-Add `TestProfileRepo` + `TestLogRepo` to `tests/persistence/test_repos.py`. Copy from `tests/ket_partner/test_db.py`:
+Add `TestProfileRepo` + `TestLogRepo` to `tests/persistence/test_repos.py`. Also add per-repo helpers (`_init_profile_repo`, `_init_log_repo`) following the same pattern as Tasks 4–5. Copy from `tests/ket_partner/test_db.py`:
 
 ProfileRepo:
 - `test_profile_repo_init_creates_single_row` (l.171)
@@ -701,14 +931,66 @@ LogRepo:
 - `test_last_ai_message_returns_latest_when_no_session_start` (l.334)
 - `test_log_append_persists_target_words_with_context` (l.593)
 
+For each migrated body, apply two transforms:
+1. `repos = await _init_repos(temp_db_path, csv_path=None)` → `repo = await _init_profile_repo(temp_db_path)` (or `_init_log_repo(...)`)
+2. `repos.profile.<method>(...)` → `repo.<method>(...)` (or `repos.log.<method>(...)` → `repo.<method>(...)`)
+
+```python
+# tests/persistence/test_repos.py (append)
+from src.persistence.repos import LogRepo, ProfileRepo
+
+
+async def _init_profile_repo(db_path: str) -> ProfileRepo:
+    db = await init_db(db_path, csv_path=None)
+    return ProfileRepo(db, "default")
+
+
+async def _init_log_repo(db_path: str) -> LogRepo:
+    db = await init_db(db_path, csv_path=None)
+    return LogRepo(db, "default")
+
+
+@pytest.mark.asyncio
+class TestProfileRepo:
+    async def test_profile_repo_init_creates_single_row(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:171-176 verbatim, with
+        # `repos = await _init_repos(...)` → `repo = await _init_profile_repo(...)`
+        # and `repos.profile.get()` → `repo.get()`.
+        ...
+
+
+@pytest.mark.asyncio
+class TestLogRepo:
+    async def test_last_ai_message_returns_none_when_no_ai_rows(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:328-330 verbatim, with
+        # `_init_repos` → `_init_log_repo`, `repos.log.` → `repo.`.
+        ...
+
+    async def test_last_ai_message_returns_latest_when_no_session_start(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:334-342 verbatim, same transform.
+        ...
+
+    async def test_log_append_persists_target_words_with_context(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:593-606 verbatim, same transform.
+        ...
+```
+
 - [ ] **Step 2: Run test to verify it fails**
 
 `D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_repos.py::TestProfileRepo tests/persistence/test_repos.py::TestLogRepo -v`
-Expected: FAIL — `AttributeError: module 'persistence.repos' has no attribute 'ProfileRepo'`
+Expected: FAIL — `ImportError: cannot import name 'ProfileRepo' from 'persistence.repos'`
 
 - [ ] **Step 3: Append ProfileRepo + LogRepo**
 
-Copy `ProfileRepo` from `src/flow/ket_partner/db.py:425-502` and `LogRepo` from `db.py:505-570` verbatim into `src/persistence/repos.py`. No signature changes.
+First update the top-of-file import to bring in `json`, `datetime`, `timezone`:
+
+```python
+# src/persistence/repos.py (edit the existing import block at top)
+import json
+from datetime import datetime, timezone
+```
+
+Then copy `ProfileRepo` from `src/flow/ket_partner/db.py:425-502` and `LogRepo` from `db.py:505-570` verbatim into `src/persistence/repos.py`. No signature changes.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -724,7 +1006,7 @@ git commit -m "feat(persistence): add ProfileRepo + LogRepo"
 
 ---
 
-### Task 6: persistence/repos.py — RecentSentencesRepo + Repos aggregator
+### Task 7: persistence/repos.py — RecentSentencesRepo + Repos aggregator
 
 **Files:**
 - Modify: `src/persistence/repos.py`
@@ -737,19 +1019,56 @@ git commit -m "feat(persistence): add ProfileRepo + LogRepo"
 
 - [ ] **Step 1: Write the failing test**
 
-Add `TestRecentSentencesRepo` + `TestRepos` to `tests/persistence/test_repos.py`. Copy from `tests/ket_partner/test_db.py`:
+Add `TestRecentSentencesRepo` + `TestRepos` to `tests/persistence/test_repos.py`. Tests now use `init_db` + `Repos.for_user` (both exist by this task). Copy from `tests/ket_partner/test_db.py`:
 
 - `test_recent_sentences_repo` (l.648)
 - `test_multi_user_isolation` (l.610)
 - `test_ket_vocabulary_uses_composite_pk` (l.70)
 
+For `test_multi_user_isolation` and `test_recent_sentences_repo`, the body already uses `db = await init_db(...)` + `Repos.for_user(db, ...)` — only the import line changes (`from flow.ket_partner.db import Repos, init_db` → `from src.persistence.bootstrap import init_db` + `from src.persistence.repos import Repos`).
+
+For `test_ket_vocabulary_uses_composite_pk`, apply two transforms:
+1. `repos = await _init_repos(temp_db_path, csv_path=None)` → `db = await init_db(temp_db_path, csv_path=None)` + `repos = Repos.for_user(db, "default")`
+2. `repos.vocab._db.execute(...)` → `db.execute(...)`
+
 ```python
+# tests/persistence/test_repos.py (append)
+from src.persistence.repos import RecentSentencesRepo, Repos
+
+
+async def _init_repos(db_path: str, csv_path: str | None = None) -> Repos:
+    """Aggregate helper for tests that exercise cross-repo behavior.
+
+    Opens DB via bootstrap.init_db, wraps a full Repos facade. Caller owns
+    the connection (Repos.close is the caller's responsibility, or rely on
+    temp_db_path file cleanup).
+    """
+    db = await init_db(db_path, csv_path=csv_path)
+    return Repos.for_user(db, "default")
+
+
+@pytest.mark.asyncio
+class TestRecentSentencesRepo:
+    async def test_recent_sentences_repo(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:648-664 verbatim, only
+        # change the import (init_db + Repos already imported at module top).
+        ...
+
+
 @pytest.mark.asyncio
 class TestRepos:
+    async def test_multi_user_isolation(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:610-624 verbatim.
+        ...
+
+    async def test_ket_vocabulary_uses_composite_pk(self, temp_db_path):
+        # Copy body from tests/ket_partner/test_db.py:70-77 verbatim, with
+        # the two transforms above.
+        ...
+
     async def test_for_user_no_config_param(self, temp_db_path):
         """Spec §3: Repos.for_user signature drops config (Option B).
         Constructing without config must succeed — no KetConfig import."""
-        from persistence.bootstrap import init_db  # local import; A7 adds this
         db = await init_db(temp_db_path, csv_path=None)
         repos = Repos.for_user(db, "default")
         assert repos.vocab is not None
@@ -760,9 +1079,16 @@ class TestRepos:
 - [ ] **Step 2: Run test to verify it fails**
 
 `D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_repos.py::TestRecentSentencesRepo tests/persistence/test_repos.py::TestRepos -v`
-Expected: FAIL — `AttributeError: module 'persistence.repos' has no attribute 'RecentSentencesRepo'`
+Expected: FAIL — `ImportError: cannot import name 'RecentSentencesRepo' from 'persistence.repos'`
 
 - [ ] **Step 3: Append RecentSentencesRepo + Repos**
+
+First update the top-of-file import to bring in `re`:
+
+```python
+# src/persistence/repos.py (edit the existing import block at top)
+import re
+```
 
 Copy `RecentSentencesRepo` from `db.py:573-607` verbatim. Append `Repos` adapted from `db.py:610-639` — **delete** `config` param + `if config is None: from flow.ket_partner.config import load_config` block + `self._config` field + StatsRepo's config arg:
 
@@ -806,6 +1132,8 @@ class Repos:
         await self._db.close()
 ```
 
+Also drop the now-unused `from typing import Optional` import added in Task 4 (it was a parity placeholder; with Task 7 complete, `Optional` is no longer referenced anywhere in the file).
+
 - [ ] **Step 4: Run test to verify it passes**
 
 `D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_repos.py -v`
@@ -820,39 +1148,29 @@ git commit -m "feat(persistence): add RecentSentencesRepo + Repos aggregator (no
 
 ---
 
-### Task 7: persistence/migration.py + bootstrap.py + __init__.py
+### Task 8: persistence/migration.py + finalize __init__.py re-exports
 
 **Files:**
 - Create: `src/persistence/migration.py`
-- Create: `src/persistence/bootstrap.py`
-- Modify: `src/persistence/__init__.py`
+- Modify: `src/persistence/bootstrap.py` (wire `migrate_old_schema_if_needed` into `init_db`; remove the Task 3 no-op placeholder)
+- Modify: `src/persistence/__init__.py` (add full re-export set)
 - Create: `tests/persistence/test_migration.py`
-- Create: `tests/persistence/test_bootstrap.py`
 
 **Interfaces:**
 - Produces: `persistence.migration.migrate_old_schema_if_needed(db) -> None`
-- Produces: `persistence.bootstrap.init_db(db_path, csv_path=None, default_nickname="宝贝", default_age=8) -> aiosqlite.Connection`
-- Produces: `persistence.bootstrap._import_csv(db, csv_path) -> None` (private)
-- `persistence/__init__.py` re-exports: `init_db`, `WordRef`, `MASTERY_CAP`, `derive_status`, `VocabRepo`, `StatsRepo`, `ProfileRepo`, `LogRepo`, `RecentSentencesRepo`, `Repos`
+- `persistence/__init__.py` final re-exports: `init_db`, `WordRef`, `MASTERY_CAP`, `derive_status`, `VocabRepo`, `StatsRepo`, `ProfileRepo`, `LogRepo`, `RecentSentencesRepo`, `Repos`
 
 - [ ] **Step 1: Write the failing test**
-
-`tests/persistence/test_bootstrap.py` — migrate from `tests/ket_partner/test_db.py`:
-- `test_init_db_creates_tables` (l.52)
-- `test_import_csv_creates_one_row_per_context` (l.105)
-- `test_import_csv_handles_bom` (l.133)
-- `test_import_csv_links_topic_to_specific_context` (l.151)
-
-Change import: `from persistence.bootstrap import init_db`.
 
 `tests/persistence/test_migration.py`:
 
 ```python
+# tests/persistence/test_migration.py
 import pytest
 import aiosqlite
 
-from persistence.migration import migrate_old_schema_if_needed
-from persistence.schema import SCHEMA_SQL
+from src.persistence.migration import migrate_old_schema_if_needed
+from src.persistence.schema import SCHEMA_SQL
 
 
 @pytest.mark.asyncio
@@ -891,10 +1209,10 @@ async def test_migration_noop_on_modern_schema(temp_db_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-`D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_bootstrap.py tests/persistence/test_migration.py -v`
-Expected: FAIL — `ModuleNotFoundError`
+`D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/test_migration.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'persistence.migration'`
 
-- [ ] **Step 3: Create migration.py + bootstrap.py + __init__.py**
+- [ ] **Step 3: Create migration.py + wire bootstrap + finalize __init__.py**
 
 ```python
 # src/persistence/migration.py
@@ -914,56 +1232,26 @@ async def migrate_old_schema_if_needed(db: aiosqlite.Connection) -> None:
     ...
 ```
 
+Edit `src/persistence/bootstrap.py` — add the migration import at top, and insert the `await migrate_old_schema_if_needed(db)` call between the PRAGMA setup and `executescript(SCHEMA_SQL)` (replacing the Task 3 no-op placeholder):
+
 ```python
-# src/persistence/bootstrap.py
-"""Composition-root DB initialization. Not for per-request use."""
-import csv
-import sqlite3
-
-import aiosqlite
-
-from flow.common import logger
+# src/persistence/bootstrap.py (edit)
+# Add to imports at top:
 from persistence.migration import migrate_old_schema_if_needed
-from persistence.schema import SCHEMA_SQL
 
-_DEFAULT_CSV = None  # resolved by caller (CLI / API)
-
-
-async def init_db(
-    db_path: str,
-    csv_path: str | None = None,
-    default_nickname: str = "宝贝",
-    default_age: int = 8,
-) -> aiosqlite.Connection:
-    """Open connection, set PRAGMAs, run migration, executescript schema,
-    seed default user + kid_profile, optional CSV import."""
+# In init_db body, replace the Task 3 no-op with the real call:
+async def init_db(...) -> aiosqlite.Connection:
     db = await aiosqlite.connect(db_path)
     db.row_factory = sqlite3.Row
     await db.execute("PRAGMA journal_mode=WAL;")
     await db.execute("PRAGMA busy_timeout=5000;")
-    await migrate_old_schema_if_needed(db)
+    await migrate_old_schema_if_needed(db)  # <-- was a Task 3 no-op; now real
     await db.executescript(SCHEMA_SQL)
-    await db.execute(
-        "INSERT OR IGNORE INTO users (id, nickname, age) VALUES ('default', ?, ?)",
-        (default_nickname, default_age),
-    )
-    await db.execute(
-        "INSERT OR IGNORE INTO kid_profile (user_id, total_turns) VALUES ('default', 0)",
-    )
-    await db.commit()
-    if csv_path:
-        await _import_csv(db, csv_path)
-    return db
-
-
-async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:
-    """Import KET vocabulary from CSV. Private — only bootstrap.py calls this."""
-    # Copy body from src/flow/ket_partner/db.py:737-762 verbatim
-    ...
+    # ... rest unchanged ...
 ```
 
 ```python
-# src/persistence/__init__.py
+# src/persistence/__init__.py (final form)
 """Top-level persistence package.
 
 Re-exports only the public API. SCHEMA_SQL, _import_csv, and
@@ -991,13 +1279,13 @@ __all__ = [
 - [ ] **Step 4: Run test to verify it passes**
 
 `D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/persistence/ -v`
-Expected: all persistence tests pass
+Expected: all persistence tests pass (schema + models + bootstrap + repos + migration).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/persistence/migration.py src/persistence/bootstrap.py src/persistence/__init__.py tests/persistence/test_migration.py tests/persistence/test_bootstrap.py
-git commit -m "feat(persistence): add migration.py + bootstrap.py + __init__ re-exports"
+git add src/persistence/migration.py src/persistence/bootstrap.py src/persistence/__init__.py tests/persistence/test_migration.py
+git commit -m "feat(persistence): add migration.migrate_old_schema_if_needed; finalize __init__ re-exports"
 ```
 
 ---
@@ -1006,7 +1294,7 @@ git commit -m "feat(persistence): add migration.py + bootstrap.py + __init__ re-
 
 Builds the Protocol contract, renames nodes.py, extracts sentence_orchestration + graph expansion. `agent.py` ends up holding only `KETPartnerAgent` node methods.
 
-### Task 8: flow/ket_partner/persistence.py (Protocol + get_repos)
+### Task 9: flow/ket_partner/persistence.py (Protocol + get_repos)
 
 **Files:**
 - Create: `src/flow/ket_partner/persistence.py`
@@ -1152,7 +1440,7 @@ git commit -m "feat(ket_partner): add persistence.py Protocol contract + get_rep
 
 ---
 
-### Task 9: vocab_selector.py imports migrate to TYPE_CHECKING
+### Task 10: vocab_selector.py imports migrate to TYPE_CHECKING
 
 **Files:**
 - Modify: `src/flow/ket_partner/vocab_selector.py`
@@ -1241,14 +1529,14 @@ git commit -m "refactor(ket_partner): migrate vocab_selector to TYPE_CHECKING Wo
 
 ---
 
-### Task 10: nodes.py → mastery.py + output_format.py
+### Task 11: nodes.py → mastery.py + output_format.py
 
 **Files:**
 - Create: `src/flow/ket_partner/mastery.py`
 - Create: `src/flow/ket_partner/output_format.py`
 - Create: `tests/flow/ket_partner/test_mastery.py`
 - Create: `tests/flow/ket_partner/test_output_format.py`
-- Delete (in Task 24): `src/flow/ket_partner/nodes.py`, `tests/ket_partner/test_nodes.py`
+- Delete (in Task 25): `src/flow/ket_partner/nodes.py`, `tests/ket_partner/test_nodes.py`
 
 **Interfaces:**
 - Produces: `mastery.apply_mastery_updates(state: BTPKetState, repos: KETPartnerRepos) -> None`
@@ -1375,12 +1663,12 @@ git commit -m "refactor(ket_partner): split nodes.py into mastery.py + output_fo
 
 ---
 
-### Task 11: flow/ket_partner/sentence_orchestration.py (extract from agent.py)
+### Task 12: flow/ket_partner/sentence_orchestration.py (extract from agent.py)
 
 **Files:**
 - Create: `src/flow/ket_partner/sentence_orchestration.py`
 - Create: `tests/flow/ket_partner/test_sentence_orchestration.py`
-- (agent.py edits happen in Task 12)
+- (agent.py edits happen in Task 13)
 
 **Interfaces:**
 - Produces: `sentence_orchestration.generate_with_fallback(...)`
@@ -1722,7 +2010,7 @@ git commit -m "feat(ket_partner): extract sentence_orchestration from agent"
 
 ---
 
-### Task 12: graph.py expand + agent.py slim + test_graph_integration.py migration
+### Task 13: graph.py expand + agent.py slim + test_graph_integration.py migration
 
 This is the big one — splits `agent.py`, expands `graph.py`, and migrates the 1908-line `test_graph_integration.py`. Do this in 5 sub-commits under one task.
 
@@ -1935,7 +2223,7 @@ git commit -m "refactor(ket_partner): split agent.py — extract graph.py + slim
 
 ## Phase C: reporting package (NEW)
 
-### Task 13: reporting/ket_partner/categories.py (Option B single source)
+### Task 14: reporting/ket_partner/categories.py (Option B single source)
 
 **Files:**
 - Create: `src/reporting/__init__.py` (empty)
@@ -2105,7 +2393,7 @@ git commit -m "feat(reporting): add categories.py — single source for 5-way cl
 
 ---
 
-### Task 14: reporting/ket_partner/markdown.py
+### Task 15: reporting/ket_partner/markdown.py
 
 **Files:**
 - Create: `src/reporting/ket_partner/markdown.py`
@@ -2250,7 +2538,7 @@ git commit -m "feat(reporting): add markdown.py — render pre-bucketed rows"
 
 ---
 
-### Task 15: reporting/ket_partner/exporter.py
+### Task 16: reporting/ket_partner/exporter.py
 
 **Files:**
 - Create: `src/reporting/ket_partner/exporter.py`
@@ -2357,7 +2645,7 @@ git commit -m "feat(reporting): add exporter.py using list_all_with_vocab + grou
 
 ## Phase D: cli package (NEW)
 
-### Task 16: cli/ket_partner/chat_logger.py
+### Task 17: cli/ket_partner/chat_logger.py
 
 **Files:**
 - Create: `src/cli/__init__.py` (empty)
@@ -2403,7 +2691,7 @@ git commit -m "feat(cli): move ChatLogger to cli/ket_partner/"
 
 ---
 
-### Task 17: cli/ket_partner/commands.py
+### Task 18: cli/ket_partner/commands.py
 
 **Files:**
 - Create: `src/cli/ket_partner/commands.py`
@@ -2504,7 +2792,7 @@ git commit -m "feat(cli): move CommandHandler; inject Repos instead of db_path"
 
 ---
 
-### Task 18: cli/ket_partner/main.py
+### Task 19: cli/ket_partner/main.py
 
 **Files:**
 - Create: `src/cli/ket_partner/main.py`
@@ -2656,7 +2944,7 @@ git commit -m "feat(cli): move main.py to cli/ket_partner/; build_agent without 
 
 ## Phase E: API updates
 
-### Task 19: api/app.py imports update
+### Task 20: api/app.py imports update
 
 **Files:**
 - Modify: `src/api/app.py:16-17, 56`
@@ -2731,7 +3019,7 @@ git commit -m "refactor(api): import build_agent from flow.ket_partner.graph; dr
 
 ---
 
-### Task 20: api/routes/chat.py imports update
+### Task 21: api/routes/chat.py imports update
 
 **Files:**
 - Modify: `src/api/routes/chat.py`
@@ -2760,7 +3048,7 @@ git commit -m "refactor(api): chat route imports Repos from persistence"
 
 ---
 
-### Task 21: api/routes/report.py Option B refactor
+### Task 22: api/routes/report.py Option B refactor
 
 **Files:**
 - Modify: `src/api/routes/report.py`
@@ -2801,7 +3089,7 @@ async def test_report_counts_uses_python_classification(client, temp_db_with_voc
 - [ ] **Step 2: Run test to verify it fails**
 
 `D:/ProgramData/miniforge3/envs/langgraph/python.exe -m pytest tests/api/test_report.py -v`
-Expected: FAIL — old route still calls `repos.stats.count_by_category` which doesn't exist anymore (StatsRepo changed in A4).
+Expected: FAIL — old route still calls `repos.stats.count_by_category` which doesn't exist anymore (StatsRepo changed in Task 5).
 
 - [ ] **Step 3: Rewrite report.py**
 
@@ -2886,7 +3174,7 @@ git commit -m "refactor(api): /report uses Option B (Python classification, sing
 
 ## Phase F: Cleanup
 
-### Task 22: Delete flow/agent.py + flow/log/
+### Task 23: Delete flow/agent.py + flow/log/
 
 **Files:**
 - Delete: `src/flow/agent.py`
@@ -2924,7 +3212,7 @@ git commit -m "chore(flow): delete dead agent.py + empty log/ dir"
 
 ---
 
-### Task 23: Clean flow/common.py dead code
+### Task 24: Clean flow/common.py dead code
 
 **Files:**
 - Modify: `src/flow/common.py`
@@ -2960,7 +3248,7 @@ git commit -m "chore(flow): delete dead code in common.py (IS_RUNNING_IN_PYTEST/
 
 ---
 
-### Task 24: Delete obsolete flow/ket_partner/ files + old tests
+### Task 25: Delete obsolete flow/ket_partner/ files + old tests
 
 **Files:**
 - Delete: `src/flow/ket_partner/db.py`
@@ -3040,7 +3328,7 @@ git commit -m "chore: delete obsolete flow/ket_partner/ files; consolidate tests
 
 ## Phase G: Final verification
 
-### Task 25: Full spec §11 acceptance gate
+### Task 26: Full spec §11 acceptance gate
 
 **Files:** none (verification only)
 
@@ -3126,7 +3414,7 @@ git log --oneline -20  # review the phase commits
 
 ## Self-Review Notes
 
-- **Spec coverage**: All 11 spec sections map to ≥1 task. §3 (persistence) → A1-A7; §4 (flow/ket_partner) → B1-B5; §5 (cli) → D1-D3; §6 (reporting) → C1-C3; §7 (composition root) → E1-E3 + D3; §8 (test reorg) → interleaved across all phases + F3; §9 (cleanup) → F1-F3; §10.2 (passthrough tech debt) → preserved in graph.py; §11 (acceptance) → G1.
+- **Spec coverage**: All 11 spec sections map to ≥1 task. §3 (persistence) → Tasks 1-8; §4 (flow/ket_partner) → Tasks 9-13; §5 (cli) → Tasks 17-19; §6 (reporting) → Tasks 14-16; §7 (composition root) → Tasks 20-22 + Task 19; §8 (test reorg) → interleaved across all phases + Task 24; §9 (cleanup) → Tasks 23-25; §10.2 (passthrough tech debt) → preserved in graph.py; §11 (acceptance) → Task 26.
 - **Type consistency**: `KETPartnerRepos` Protocol used uniformly in flow/ket_partner/ + reporting/. `Repos` concrete class used only in composition roots (api/, cli/, tests). WordRef always via TYPE_CHECKING in flow/ket_partner/.
 - **Build order**: A → B → C → D → E → F → G. Each phase's tests pass independently; nothing forward-references code from a later phase.
-- **Risk**: Task 12 (agent.py split) is the highest-risk task — 1908-line test_graph_integration.py must be migrated carefully. Recommend running it standalone after Phase A + B1-B4 to isolate issues.
+- **Risk**: Task 13 (agent.py split) is the highest-risk task — 1908-line test_graph_integration.py must be migrated carefully. Recommend running it standalone after Phase A + B1-B4 to isolate issues.
