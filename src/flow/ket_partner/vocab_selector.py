@@ -1,6 +1,12 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from flow.ket_partner.config import KetConfig
-from flow.ket_partner.db import Repos, WordRef
+from flow.ket_partner.persistence import KETPartnerRepos
+
+if TYPE_CHECKING:
+    from persistence.models import WordRef
 
 
 def _compute_refill_mode(learning_count: int, current_flag: int, low: int, high: int) -> int:
@@ -11,13 +17,13 @@ def _compute_refill_mode(learning_count: int, current_flag: int, low: int, high:
     return current_flag
 
 
-async def rotate_topic(repos: Repos, current: str | None) -> str | None:
+async def rotate_topic(repos: KETPartnerRepos, current: str | None) -> str | None:
     candidates = await repos.vocab.topics_with_unmastered(exclude=current)
     return candidates[0] if candidates else current
 
 
 async def select_target_word(
-    repos: Repos, profile: dict, config: KetConfig
+    repos: KETPartnerRepos, profile: dict, config: KetConfig
 ) -> WordRef | None:
     low = config.vocab_refill.low_watermark
     high = config.vocab_refill.high_watermark
@@ -48,7 +54,7 @@ async def select_target_word(
     return practice
 
 
-async def _pick_new_word(repos: Repos, profile: dict) -> WordRef | None:
+async def _pick_new_word(repos: KETPartnerRepos, profile: dict) -> WordRef | None:
     topic = profile["current_topic"]
     if topic:
         candidates = await repos.vocab.words_in_topic_without_stats(topic)
