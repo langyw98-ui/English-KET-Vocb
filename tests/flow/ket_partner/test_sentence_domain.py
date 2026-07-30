@@ -1289,3 +1289,33 @@ def test_find_placeholder_returns_first_match():
     assert find_placeholder("alarm clock") == ""
     assert find_placeholder("") == ""
     assert find_placeholder(None) == ""
+
+
+def test_sentence_generation_result_is_frozen():
+    """SentenceGenerationResult 必须 frozen=True,防止运行时被修改。"""
+    from dataclasses import FrozenInstanceError
+
+    from flow.ket_partner.sentence_domain import SentenceGenerationResult, ValidationResult
+
+    r = SentenceGenerationResult(
+        sentence="I see a cat.",
+        result=ValidationResult(ok=True),
+        target="cat",
+        context="",
+    )
+    try:
+        r.sentence = "modified"  # type: ignore[misc]
+        raised = False
+    except FrozenInstanceError:
+        raised = True
+    assert raised, "SentenceGenerationResult 应 frozen"
+
+
+def test_sentence_generation_result_has_named_fields():
+    """SentenceGenerationResult 必须 4 个命名字段,禁止裸元组。"""
+    import dataclasses
+
+    from flow.ket_partner.sentence_domain import SentenceGenerationResult
+
+    fields = {f.name for f in dataclasses.fields(SentenceGenerationResult)}
+    assert fields == {"sentence", "result", "target", "context"}

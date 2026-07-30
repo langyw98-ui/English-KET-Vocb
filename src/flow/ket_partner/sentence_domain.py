@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import re
+from dataclasses import dataclass
 from os.path import dirname, join
 
 import openai
@@ -226,6 +227,29 @@ class ValidationResult(BaseModel):
     ok: bool
     words_used: list = Field(default_factory=list)
     non_ket_words: list = Field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class SentenceGenerationResult:
+    """generate_with_fallback 的最终返回类型。
+
+    替代原裸 4 元组 (sentence, result, target, context),让调用方按命名属性访问,
+    位置错配在编译期就能暴露。
+    """
+    sentence: str
+    result: ValidationResult
+    target: str
+    context: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RetryOuter:
+    """_switch_target_or_accept 的内部信号:已切换 target,请求外层 while 重试。
+
+    不对外暴露(下划线前缀)。
+    """
+    target: str
+    context: str
 
 
 def _tokenize(sentence: str) -> list:
