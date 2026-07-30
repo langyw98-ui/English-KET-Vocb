@@ -2,7 +2,14 @@
 .pytest_cache/
 .superpowers/
 __pycache__/
-logs/
+/logs/
 learning_report*.md
 node_modules/
-dist/
+dist/
+
+# Dynamic Storage Directory
+storage/db/*.db
+storage/reports/*.md
+storage/logs/*.log
+!storage/**/.gitkeep
+
