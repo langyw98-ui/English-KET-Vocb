@@ -1,9 +1,10 @@
+from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from flow.common import logger
-from src.persistence.repos import Repos
+from flow.ket_partner.persistence import KETPartnerRepos
 
 _SYSTEM = """你分析一个小朋友的 KET 词汇学习历史,增量更新学习画像。
 - 学习聚焦,不分析兴趣 / 性格 / 情感
@@ -19,7 +20,7 @@ class ProfileSummary(BaseModel):
     dialogue_strategy: str = ""
 
 
-async def run_profile_summary(llm, repos: Repos) -> None:
+async def run_profile_summary(llm, repos: KETPartnerRepos) -> None:
     profile = await repos.profile.get()
     recent = await repos.log.recent(limit=20)
     log_text = "\n".join(f"[{r['role']}] {r['content']}" for r in recent)

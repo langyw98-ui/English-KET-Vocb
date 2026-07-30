@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from langchain_core.runnables import RunnableConfig
 
 if TYPE_CHECKING:
-    from persistence.models import WordRef
+    from src.persistence.models import WordRef
 
 
 class VocabRepoProtocol(Protocol):

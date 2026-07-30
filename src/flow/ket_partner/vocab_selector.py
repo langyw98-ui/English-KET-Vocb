@@ -6,7 +6,7 @@ from flow.ket_partner.config import KetConfig
 from flow.ket_partner.persistence import KETPartnerRepos
 
 if TYPE_CHECKING:
-    from persistence.models import WordRef
+    from src.persistence.models import WordRef
 
 
 def _compute_refill_mode(learning_count: int, current_flag: int, low: int, high: int) -> int:
