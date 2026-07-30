@@ -5,12 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from flow.ket_partner.db import Repos, WordRef, init_db
 from flow.ket_partner.graph import build_agent
 from flow.ket_partner.input_classifier import IntentClassification
 from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.translation_evaluator import TranslationEval
 from flow.ket_partner.word_meaning_lookup import SentenceTranslation, WordMeaning
+from src.persistence.bootstrap import init_db
+from src.persistence.models import WordRef
+from src.persistence.repos import Repos
 
 
 def _mock_llm(intent_resp, eval_resp=None, meaning_resp=None, sentence_translation_resp=None, naturalness_resp=None, sentence_text="The cat is on the bed."):

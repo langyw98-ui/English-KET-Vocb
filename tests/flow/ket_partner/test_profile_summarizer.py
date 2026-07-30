@@ -2,11 +2,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.db import Repos, init_db
 from flow.ket_partner.profile_summarizer import (
     ProfileSummary,
     run_profile_summary,
 )
+from src.persistence.bootstrap import init_db
+from src.persistence.repos import Repos
 
 
 def _make_llm(return_value):

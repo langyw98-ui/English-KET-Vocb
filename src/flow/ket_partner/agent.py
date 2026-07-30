@@ -5,7 +5,8 @@ from langchain_core.runnables import RunnableConfig
 
 from flow.common import logger
 from flow.ket_partner.input_classifier import classify_intent
-from flow.ket_partner.nodes import apply_mastery_updates, format_output_text
+from flow.ket_partner.mastery import apply_mastery_updates
+from flow.ket_partner.output_format import format_output_text
 from flow.ket_partner.persistence import KETPartnerRepos, get_repos
 from flow.ket_partner.profile_summarizer import run_profile_summary
 from flow.ket_partner.sentence_orchestration import (

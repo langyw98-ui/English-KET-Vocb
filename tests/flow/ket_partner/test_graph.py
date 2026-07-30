@@ -4,11 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.messages import HumanMessage
 
-from flow.ket_partner.db import Repos, init_db
 from flow.ket_partner.graph import build_agent
 from flow.ket_partner.input_classifier import IntentClassification
 from flow.ket_partner.sentence_naturalness import NaturalnessResult
 from flow.ket_partner.translation_evaluator import TranslationEval
+from src.persistence.bootstrap import init_db
+from src.persistence.repos import Repos
 
 
 @pytest.fixture

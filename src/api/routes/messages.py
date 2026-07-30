@@ -2,9 +2,9 @@
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
-from flow.ket_partner.db import Repos
 from src.api.deps import User, get_current_user, get_db
 from src.api.schemas import MessageOut
+from src.persistence.repos import Repos
 
 router = APIRouter()
 

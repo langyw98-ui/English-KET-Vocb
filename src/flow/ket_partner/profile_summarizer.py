@@ -3,7 +3,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from flow.common import logger
-from flow.ket_partner.db import Repos
+from src.persistence.repos import Repos
 
 _SYSTEM = """你分析一个小朋友的 KET 词汇学习历史,增量更新学习画像。
 - 学习聚焦,不分析兴趣 / 性格 / 情感
