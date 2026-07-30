@@ -29,9 +29,9 @@ Apply to every task; do not violate.
 
 ## Phase A: persistence package (NEW)
 
-Builds the new top-level `src/persistence/` package alongside the existing `flow/ket_partner/db.py`. Once Phase A–F all land, `db.py` is deleted (Task F3).
+Builds the new top-level `src/persistence/` package alongside the existing `flow/ket_partner/db.py`. Once Phase A–F all land, `db.py` is deleted (Task 24).
 
-### Task A1: Scaffold persistence package + schema.py
+### Task 1: Scaffold persistence package + schema.py
 
 **Files:**
 - Create: `src/persistence/__init__.py` (empty)
@@ -193,7 +193,7 @@ git commit -m "feat(persistence): scaffold package + schema.SCHEMA_SQL"
 
 ---
 
-### Task A2: persistence/models.py (WordRef + derive_status)
+### Task 2: persistence/models.py (WordRef + derive_status)
 
 **Files:**
 - Create: `src/persistence/models.py`
@@ -312,7 +312,7 @@ git commit -m "feat(persistence): add models.py with WordRef, MASTERY_CAP, deriv
 
 ---
 
-### Task A3: persistence/repos.py — VocabRepo
+### Task 3: persistence/repos.py — VocabRepo
 
 **Files:**
 - Create: `src/persistence/repos.py` (starts here, expanded in A4–A6)
@@ -382,7 +382,7 @@ Copy `VocabRepo` class verbatim from `src/flow/ket_partner/db.py:127-214`:
 """Per-user Repo classes for the KET partner persistence layer.
 
 Each Repo exposes a narrow async interface over a single table family.
-Repos (Task A6) aggregates the 5 per-user Repos for one request.
+Repos (Task 6) aggregates the 5 per-user Repos for one request.
 """
 import json
 import re
@@ -501,7 +501,7 @@ git commit -m "feat(persistence): add VocabRepo + test_repos.TestVocabRepo"
 
 ---
 
-### Task A4: persistence/repos.py — StatsRepo (Option B restructure)
+### Task 4: persistence/repos.py — StatsRepo (Option B restructure)
 
 **Files:**
 - Modify: `src/persistence/repos.py` (append StatsRepo)
@@ -679,7 +679,7 @@ git commit -m "feat(persistence): add StatsRepo with list_all_with_vocab; drop c
 
 ---
 
-### Task A5: persistence/repos.py — ProfileRepo + LogRepo
+### Task 5: persistence/repos.py — ProfileRepo + LogRepo
 
 **Files:**
 - Modify: `src/persistence/repos.py`
@@ -724,7 +724,7 @@ git commit -m "feat(persistence): add ProfileRepo + LogRepo"
 
 ---
 
-### Task A6: persistence/repos.py — RecentSentencesRepo + Repos aggregator
+### Task 6: persistence/repos.py — RecentSentencesRepo + Repos aggregator
 
 **Files:**
 - Modify: `src/persistence/repos.py`
@@ -820,7 +820,7 @@ git commit -m "feat(persistence): add RecentSentencesRepo + Repos aggregator (no
 
 ---
 
-### Task A7: persistence/migration.py + bootstrap.py + __init__.py
+### Task 7: persistence/migration.py + bootstrap.py + __init__.py
 
 **Files:**
 - Create: `src/persistence/migration.py`
@@ -1006,7 +1006,7 @@ git commit -m "feat(persistence): add migration.py + bootstrap.py + __init__ re-
 
 Builds the Protocol contract, renames nodes.py, extracts sentence_orchestration + graph expansion. `agent.py` ends up holding only `KETPartnerAgent` node methods.
 
-### Task B1: flow/ket_partner/persistence.py (Protocol + get_repos)
+### Task 8: flow/ket_partner/persistence.py (Protocol + get_repos)
 
 **Files:**
 - Create: `src/flow/ket_partner/persistence.py`
@@ -1152,7 +1152,7 @@ git commit -m "feat(ket_partner): add persistence.py Protocol contract + get_rep
 
 ---
 
-### Task B2: vocab_selector.py imports migrate to TYPE_CHECKING
+### Task 9: vocab_selector.py imports migrate to TYPE_CHECKING
 
 **Files:**
 - Modify: `src/flow/ket_partner/vocab_selector.py`
@@ -1241,14 +1241,14 @@ git commit -m "refactor(ket_partner): migrate vocab_selector to TYPE_CHECKING Wo
 
 ---
 
-### Task B3: nodes.py → mastery.py + output_format.py
+### Task 10: nodes.py → mastery.py + output_format.py
 
 **Files:**
 - Create: `src/flow/ket_partner/mastery.py`
 - Create: `src/flow/ket_partner/output_format.py`
 - Create: `tests/flow/ket_partner/test_mastery.py`
 - Create: `tests/flow/ket_partner/test_output_format.py`
-- Delete (in Task F3): `src/flow/ket_partner/nodes.py`, `tests/ket_partner/test_nodes.py`
+- Delete (in Task 24): `src/flow/ket_partner/nodes.py`, `tests/ket_partner/test_nodes.py`
 
 **Interfaces:**
 - Produces: `mastery.apply_mastery_updates(state: BTPKetState, repos: KETPartnerRepos) -> None`
@@ -1375,12 +1375,12 @@ git commit -m "refactor(ket_partner): split nodes.py into mastery.py + output_fo
 
 ---
 
-### Task B4: flow/ket_partner/sentence_orchestration.py (extract from agent.py)
+### Task 11: flow/ket_partner/sentence_orchestration.py (extract from agent.py)
 
 **Files:**
 - Create: `src/flow/ket_partner/sentence_orchestration.py`
 - Create: `tests/flow/ket_partner/test_sentence_orchestration.py`
-- (agent.py edits happen in Task B5)
+- (agent.py edits happen in Task 12)
 
 **Interfaces:**
 - Produces: `sentence_orchestration.generate_with_fallback(...)`
@@ -1722,7 +1722,7 @@ git commit -m "feat(ket_partner): extract sentence_orchestration from agent"
 
 ---
 
-### Task B5: graph.py expand + agent.py slim + test_graph_integration.py migration
+### Task 12: graph.py expand + agent.py slim + test_graph_integration.py migration
 
 This is the big one — splits `agent.py`, expands `graph.py`, and migrates the 1908-line `test_graph_integration.py`. Do this in 5 sub-commits under one task.
 
@@ -1935,7 +1935,7 @@ git commit -m "refactor(ket_partner): split agent.py — extract graph.py + slim
 
 ## Phase C: reporting package (NEW)
 
-### Task C1: reporting/ket_partner/categories.py (Option B single source)
+### Task 13: reporting/ket_partner/categories.py (Option B single source)
 
 **Files:**
 - Create: `src/reporting/__init__.py` (empty)
@@ -2105,7 +2105,7 @@ git commit -m "feat(reporting): add categories.py — single source for 5-way cl
 
 ---
 
-### Task C2: reporting/ket_partner/markdown.py
+### Task 14: reporting/ket_partner/markdown.py
 
 **Files:**
 - Create: `src/reporting/ket_partner/markdown.py`
@@ -2250,7 +2250,7 @@ git commit -m "feat(reporting): add markdown.py — render pre-bucketed rows"
 
 ---
 
-### Task C3: reporting/ket_partner/exporter.py
+### Task 15: reporting/ket_partner/exporter.py
 
 **Files:**
 - Create: `src/reporting/ket_partner/exporter.py`
@@ -2357,7 +2357,7 @@ git commit -m "feat(reporting): add exporter.py using list_all_with_vocab + grou
 
 ## Phase D: cli package (NEW)
 
-### Task D1: cli/ket_partner/chat_logger.py
+### Task 16: cli/ket_partner/chat_logger.py
 
 **Files:**
 - Create: `src/cli/__init__.py` (empty)
@@ -2403,7 +2403,7 @@ git commit -m "feat(cli): move ChatLogger to cli/ket_partner/"
 
 ---
 
-### Task D2: cli/ket_partner/commands.py
+### Task 17: cli/ket_partner/commands.py
 
 **Files:**
 - Create: `src/cli/ket_partner/commands.py`
@@ -2504,7 +2504,7 @@ git commit -m "feat(cli): move CommandHandler; inject Repos instead of db_path"
 
 ---
 
-### Task D3: cli/ket_partner/main.py
+### Task 18: cli/ket_partner/main.py
 
 **Files:**
 - Create: `src/cli/ket_partner/main.py`
@@ -2656,7 +2656,7 @@ git commit -m "feat(cli): move main.py to cli/ket_partner/; build_agent without 
 
 ## Phase E: API updates
 
-### Task E1: api/app.py imports update
+### Task 19: api/app.py imports update
 
 **Files:**
 - Modify: `src/api/app.py:16-17, 56`
@@ -2731,7 +2731,7 @@ git commit -m "refactor(api): import build_agent from flow.ket_partner.graph; dr
 
 ---
 
-### Task E2: api/routes/chat.py imports update
+### Task 20: api/routes/chat.py imports update
 
 **Files:**
 - Modify: `src/api/routes/chat.py`
@@ -2760,7 +2760,7 @@ git commit -m "refactor(api): chat route imports Repos from persistence"
 
 ---
 
-### Task E3: api/routes/report.py Option B refactor
+### Task 21: api/routes/report.py Option B refactor
 
 **Files:**
 - Modify: `src/api/routes/report.py`
@@ -2886,7 +2886,7 @@ git commit -m "refactor(api): /report uses Option B (Python classification, sing
 
 ## Phase F: Cleanup
 
-### Task F1: Delete flow/agent.py + flow/log/
+### Task 22: Delete flow/agent.py + flow/log/
 
 **Files:**
 - Delete: `src/flow/agent.py`
@@ -2924,7 +2924,7 @@ git commit -m "chore(flow): delete dead agent.py + empty log/ dir"
 
 ---
 
-### Task F2: Clean flow/common.py dead code
+### Task 23: Clean flow/common.py dead code
 
 **Files:**
 - Modify: `src/flow/common.py`
@@ -2960,7 +2960,7 @@ git commit -m "chore(flow): delete dead code in common.py (IS_RUNNING_IN_PYTEST/
 
 ---
 
-### Task F3: Delete obsolete flow/ket_partner/ files + old tests
+### Task 24: Delete obsolete flow/ket_partner/ files + old tests
 
 **Files:**
 - Delete: `src/flow/ket_partner/db.py`
@@ -3040,7 +3040,7 @@ git commit -m "chore: delete obsolete flow/ket_partner/ files; consolidate tests
 
 ## Phase G: Final verification
 
-### Task G1: Full spec §11 acceptance gate
+### Task 25: Full spec §11 acceptance gate
 
 **Files:** none (verification only)
 
@@ -3129,4 +3129,4 @@ git log --oneline -20  # review the phase commits
 - **Spec coverage**: All 11 spec sections map to ≥1 task. §3 (persistence) → A1-A7; §4 (flow/ket_partner) → B1-B5; §5 (cli) → D1-D3; §6 (reporting) → C1-C3; §7 (composition root) → E1-E3 + D3; §8 (test reorg) → interleaved across all phases + F3; §9 (cleanup) → F1-F3; §10.2 (passthrough tech debt) → preserved in graph.py; §11 (acceptance) → G1.
 - **Type consistency**: `KETPartnerRepos` Protocol used uniformly in flow/ket_partner/ + reporting/. `Repos` concrete class used only in composition roots (api/, cli/, tests). WordRef always via TYPE_CHECKING in flow/ket_partner/.
 - **Build order**: A → B → C → D → E → F → G. Each phase's tests pass independently; nothing forward-references code from a later phase.
-- **Risk**: Task B5 (agent.py split) is the highest-risk task — 1908-line test_graph_integration.py must be migrated carefully. Recommend running it standalone after Phase A + B1-B4 to isolate issues.
+- **Risk**: Task 12 (agent.py split) is the highest-risk task — 1908-line test_graph_integration.py must be migrated carefully. Recommend running it standalone after Phase A + B1-B4 to isolate issues.
