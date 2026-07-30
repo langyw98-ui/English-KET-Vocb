@@ -9,25 +9,36 @@ class BTPKetState(TypedDict):
     """
     BTP Ket Partner 核心对话状态图
 
-    字段 Single-Writer 声明：
-    - messages: 仅 agent_node 与用户交互层写入追加；其他节点只读
-    - intent: 仅 classify_input_node 在路由阶段写入；其他节点只读
-    - asked_word: 仅 classify_input_node 在解析查词意图时写入；其他节点只读
-    - wrong_words: 仅 evaluate_translation_node 写入；其他节点只读
-    - sentence_translation: 仅 evaluate_translation_node 与 lookup_target_meaning_node 写入；其他节点只读
-    - overall_correct: 仅 evaluate_translation_node 写入；其他节点只读
-    - asked_word_meaning: 仅 lookup_target_meaning_node 写入；其他节点只读
-    - target_word: 仅 select_vocab_node 写入；其他节点只读
-    - target_context: 仅 select_vocab_node 写入；其他节点只读
-    - last_target_word: 仅 persist_turn_node 在轮次结束时写入；其他节点只读
-    - last_target_context: 仅 persist_turn_node 在轮次结束时写入；其他节点只读
-    - last_sentence_words: 仅 generate_sentence_node 写入；其他节点只读
-    - topic: 仅 select_vocab_node 写入；其他节点只读
-    - profile_strategy: 仅 profile_summarizer_node 写入；其他节点只读
-    - profile_weakness: 仅 profile_summarizer_node 写入；其他节点只读
-    - last_english_sentence: 仅 generate_sentence_node 写入；其他节点只读
-    - _exposure_recorded: 仅 generate_sentence_node 标记与 persist_turn_node 读取；其他节点只读
-    - non_ket_annotations: 仅 generate_sentence_node 写入；其他节点只读
+    字段 Single-Writer / Multi-Writer 声明(按实际代码,nodes 已合并入 KETPartnerAgent):
+
+    - messages: 仅 init_state(截断超 10 条时)、format_output_node、
+      explain_meaning_node、redirect_to_translate_node、compliance_redirect_node
+      在追加 AI 回复时写;其他位置只读
+    - intent: 仅 classify_intent_node 在路由阶段写;其他位置只读
+    - asked_word: 仅 classify_intent_node 在解析查词意图时写;其他位置只读
+    - wrong_words: 仅 evaluate_translation_node 写;其他位置只读
+    - sentence_translation: 仅 evaluate_translation_node(translation 路径)
+      与 lookup_target_meaning_node(idk 路径)写;其他位置只读
+    - overall_correct: 仅 evaluate_translation_node 写;其他位置只读
+    - asked_word_meaning: 仅 lookup_asked_meaning_node 写;其他位置只读
+    - target_word: init_state(从上一轮 AI 消息恢复时)与
+      select_target_word_node、generate_sentence_node(换词时)写;其他位置只读
+    - target_context: 同 target_word,init_state / select_target_word_node /
+      generate_sentence_node 写;其他位置只读
+    - last_target_word: 仅 init_state(从上一轮 AI 消息恢复)写;
+      persist_turn_node 仅读取用于落库,不写状态;其他位置只读
+    - last_target_context: 同 last_target_word,仅 init_state 写;
+      persist_turn_node 仅读取;其他位置只读
+    - last_sentence_words: init_state(从上一轮 AI 消息恢复)与
+      generate_sentence_node 写;其他位置只读
+    - topic: 仅 init_state 从 profile 加载时写;其他位置只读
+    - profile_strategy: 仅 init_state 从 DB profile 加载时写;其他位置只读
+    - profile_weakness: 同 profile_strategy,仅 init_state 写;其他位置只读
+    - last_english_sentence: init_state(从上一轮 AI 消息恢复)与
+      generate_sentence_node 写;其他位置只读
+    - _exposure_recorded: 仅 generate_sentence_node 标记,persist_turn_node 读取;
+      其他位置只读
+    - non_ket_annotations: 仅 generate_sentence_node 写;其他位置只读
     """
 
     messages: list[AnyMessage]
