@@ -219,7 +219,7 @@ class KETPartnerAgent:
 
         await repos.recent.append(sentence, window=window)
 
-        apply_multiword_target_patch(target, sentence, result)
+        result = apply_multiword_target_patch(target, sentence, result)
         for w in result.words_used:
             ctx = target_ctx if w == target else ""
             await repos.stats.increment_exposed(w, context=ctx, is_target=(w == target))

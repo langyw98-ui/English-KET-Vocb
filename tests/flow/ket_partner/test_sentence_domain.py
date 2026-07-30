@@ -1216,13 +1216,35 @@ def test_apply_multiword_target_patch_adds_target_to_words_used():
     result = ValidationResult(
         ok=True, words_used=["I", "ice", "cream"], non_ket_words=["ice", "cream"]
     )
-    apply_multiword_target_patch("ice cream", "I like ice cream", result)
-    assert "ice cream" in result.words_used
-    assert "ice" not in result.words_used
-    assert "cream" not in result.words_used
-    assert "ice" not in result.non_ket_words
-    assert "cream" not in result.non_ket_words
-    assert "I" in result.words_used
+    new_result = apply_multiword_target_patch("ice cream", "I like ice cream", result)
+    assert "ice cream" in new_result.words_used
+    assert "ice" not in new_result.words_used
+    assert "cream" not in new_result.words_used
+    assert "ice" not in new_result.non_ket_words
+    assert "cream" not in new_result.non_ket_words
+    assert "I" in new_result.words_used
+
+
+def test_apply_multiword_target_patch_does_not_mutate_input():
+    """apply_multiword_target_patch 不能修改入参 result,必须返回新对象。"""
+    original = ValidationResult(
+        ok=True,
+        words_used=["play"],
+        non_ket_words=["the"],
+    )
+    # 备份原值
+    orig_words = list(original.words_used)
+    orig_non_ket = list(original.non_ket_words)
+
+    new_result = apply_multiword_target_patch("play ball", "I play ball.", original)
+
+    # 入参未被修改
+    assert original.words_used == orig_words
+    assert original.non_ket_words == orig_non_ket
+    # 返回的是新对象
+    assert new_result is not original
+    # 新对象的字段已更新
+    assert "play ball" in new_result.words_used or "play" in new_result.words_used
 
 
 # ===========================================================================

@@ -588,24 +588,37 @@ def apply_multiword_target_patch(
     target: str,
     sentence: str,
     result: ValidationResult,
-) -> None:
+) -> ValidationResult:
+    """对多词 target 应用补丁:确保 words_used 和 non_ket_words 正确反映多词边界。
+
+    纯函数:不改入参 result,返回新的 ValidationResult。
+    调用方必须使用返回值,如:
+        result = apply_multiword_target_patch(target, sentence, result)
+    """
     if (
-        target
-        and target not in result.words_used
-        and target_in_sentence(target, sentence)
+        not target
+        or target in result.words_used
+        or not target_in_sentence(target, sentence)
     ):
-        result.words_used.append(target)
-        constituents = {c.lower() for c in target.split()}
-        result.words_used = [
-            w for w in result.words_used
-            if w == target or w.lower() not in constituents
-        ]
-        result.non_ket_words = [
-            w for w in result.non_ket_words
-            if w.lower() not in constituents
-        ]
-        logger.debug(
-            f"multi-word target patch: added '{target}', "
-            f"final words_used={result.words_used}, "
-            f"non_ket_words={result.non_ket_words}"
-        )
+        return result
+
+    # 计算新的 words_used 和 non_ket_words(原逻辑保留,但改为构造新列表)
+    new_words_used = [*result.words_used, target]
+    constituents = {c.lower() for c in target.split()}
+    new_words_used = [
+        w for w in new_words_used
+        if w == target or w.lower() not in constituents
+    ]
+    new_non_ket_words = [
+        w for w in result.non_ket_words
+        if w.lower() not in constituents
+    ]
+    logger.debug(
+        f"multi-word target patch: added '{target}', "
+        f"final words_used={new_words_used}, "
+        f"non_ket_words={new_non_ket_words}"
+    )
+    return result.model_copy(update={
+        "words_used": new_words_used,
+        "non_ket_words": new_non_ket_words,
+    })
