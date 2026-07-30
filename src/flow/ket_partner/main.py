@@ -5,10 +5,10 @@ from os.path import dirname, join
 from langchain_core.messages import HumanMessage
 
 from flow.common import llm_flash, llm_max, logger
-from flow.ket_partner.agent import build_agent
 from flow.ket_partner.chat_logger import ChatLogger
 from flow.ket_partner.commands import CommandHandler, ExitLoop
 from flow.ket_partner.db import Repos, init_db
+from flow.ket_partner.graph import build_agent
 
 DEFAULT_DB = "ket_partner.db"
 DEFAULT_CSV = join(dirname(__file__), "..", "..", "..", "data", "KET_vocabulary.csv")

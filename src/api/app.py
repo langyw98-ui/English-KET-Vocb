@@ -13,8 +13,8 @@ from fastapi.responses import JSONResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from flow.common import llm_flash, llm_max, logger
-from flow.ket_partner.agent import build_agent
 from flow.ket_partner.db import init_db
+from flow.ket_partner.graph import build_agent
 from src.api.llm_key import LlmKeyStatus
 from src.api.routes import chat, llm, messages, report
 from src.api.settings import Settings
