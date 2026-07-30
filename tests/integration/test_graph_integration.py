@@ -184,12 +184,11 @@ async def test_idk_deducts_target_only(setup):
     assert target_stats is not None
     assert target_stats["wrong_count"] >= 1
 
-    # idk should only deduct the target — no other word should have wrong_count > 0
-    async with setup.log._db.execute(
-        "SELECT word, wrong_count FROM vocab_stats WHERE wrong_count > 0"
-    ) as cur:
-        rows = await cur.fetchall()
-    wrong_words = {r[0] for r in rows}
+    # idk should only deduct the target — no other word should have wrong_count > 0.
+    # Use the public StatsRepo API (list_all_with_vocab) instead of reaching
+    # into _db.execute: filter client-side to rows with wrong_count > 0.
+    all_rows = await setup.stats.list_all_with_vocab()
+    wrong_words = {r["word"] for r in all_rows if r["wrong_count"] > 0}
     assert wrong_words == {t1_target}, f"only the target should be deducted, got {wrong_words}"
 
 
@@ -334,11 +333,10 @@ async def test_e2e_multi_turn_with_windowed_messages(setup):
     # Verify both turns' user inputs were logged to conversation_log.
     # (Latent bug: with REPLACE reducer and AI-only return dicts, messages[-2]
     # in persist_turn_node saw no HumanMessage, so user inputs were never logged.)
-    async with setup.log._db.execute(
-        "SELECT role, content FROM conversation_log WHERE role = 'user' ORDER BY id"
-    ) as cur:
-        user_rows = await cur.fetchall()
-    user_contents = {r[1] for r in user_rows}
+    # Use the public LogRepo API (recent) instead of reaching into _db.execute:
+    # recent() already returns rows in ascending id order; filter to user role.
+    log_rows = await setup.log.recent(limit=50)
+    user_contents = {r["content"] for r in log_rows if r["role"] == "user"}
     assert "hi" in user_contents, "turn-1 user input must be logged"
     assert "猫在床上" in user_contents, "turn-2 user input must be logged"
 

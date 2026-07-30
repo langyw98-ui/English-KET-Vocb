@@ -49,11 +49,7 @@ async def test_translation_target_uses_real_context(repos):
     (target, '')."""
     # Add a (smart, clever) vocab row so the apply_delta orphan guard
     # accepts context='clever'.
-    await repos.vocab._db.execute(
-        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
-        "('smart', 'clever', 'adj', 0)"
-    )
-    await repos.vocab._db.commit()
+    await repos.vocab.seed_for_test("smart", context="clever", pos="adj")
     state = {
         "intent": "translation",
         "wrong_words": [],

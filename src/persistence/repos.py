@@ -104,6 +104,27 @@ class VocabRepo:
             row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def seed_for_test(
+        self,
+        word: str,
+        context: str = "",
+        pos: str | None = None,
+    ) -> None:
+        """Test-only seed helper. Inserts a (word, context, pos) row into
+        ket_vocabulary so the §4.4 orphan guard in StatsRepo.apply_delta
+        admits subsequent stats writes for this sense.
+
+        Production code MUST NOT call this — production vocab rows come from
+        init_db / CSV import (see bootstrap._import_csv). Exposed as a small
+        surface so tests don't reach into `_db.execute` directly.
+        """
+        await self._db.execute(
+            "INSERT OR IGNORE INTO ket_vocabulary (word, context, pos, is_seed) "
+            "VALUES (?, ?, ?, 0)",
+            (word, context, pos),
+        )
+        await self._db.commit()
+
 
 class StatsRepo:
     """vocab_stats table — read/write + mastery derivation.

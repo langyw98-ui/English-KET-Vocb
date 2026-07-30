@@ -52,13 +52,9 @@ async def test_export_renders_word_with_context(repos, tmp_path):
     """Spec §10: when a word has a non-empty context, the word column shows
     'word(context)'; otherwise just 'word'. No separate context column."""
     # Add a multi-sense row alongside cat (already in fixture at default sense).
-    await repos.vocab._db.execute(
-        "INSERT INTO ket_vocabulary (word, context, pos, is_seed) VALUES "
-        "('cat', 'animal', 'n', 0)"
-    )
+    await repos.vocab.seed_for_test("cat", context="animal", pos="n")
     # Touch the (cat, animal) row so it lands in a non-unused bucket.
     await repos.stats.apply_delta("cat", context="animal", delta=1, exposed=True)
-    await repos.vocab._db.commit()
     out = tmp_path / "report.md"
     cfg = load_config()
     await export_learning_report(str(out), repos, cfg)
