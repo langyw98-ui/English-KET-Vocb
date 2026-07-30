@@ -13,11 +13,6 @@ load_dotenv()
 
 logger = getLogger("ket_partner")
 
-if environ.get("PYTEST_VERSION") is not None:
-    IS_RUNNING_IN_PYTEST = True
-else:
-    IS_RUNNING_IN_PYTEST = False
-
 extra_params = {"enable_thinking": False}
 
 
@@ -58,18 +53,6 @@ def _resolve_dashscope_api_key() -> str:
 
 
 dashscope_api_key = _resolve_dashscope_api_key()
-llm_plus = ChatOpenAI(
-    api_key=SecretStr(dashscope_api_key or "placeholder"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    model="qwen3.6-plus",
-    client=AsyncOpenAI(
-        api_key=dashscope_api_key or "placeholder",
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        http_client=AsyncClient(),
-    ),
-    temperature=0,
-    extra_body=extra_params,
-)
 
 llm_max = ChatOpenAI(
     api_key=SecretStr(dashscope_api_key or "placeholder"),
@@ -95,22 +78,5 @@ llm_flash = ChatOpenAI(
     ),
     temperature=0.8,
     top_p=0.8,
-    extra_body={"enable_thinking": False},
-)
-
-doubao_api = environ.get("DOUBAO_API_KEY", "")
-llm_doubao = ChatOpenAI(
-    api_key=SecretStr(doubao_api or "placeholder"),
-    base_url="https://ark.cn-beijing.volces.com/api/v3",
-    # model="doubao-seed-1-6-251015",
-    # model="doubao-seed-1-6-lite-251015",
-    model="doubao-seed-1-6-flash-250828",
-    # async_client=AsyncClient(),
-    client=AsyncOpenAI(
-        api_key=doubao_api or "placeholder",
-        base_url="https://ark.cn-beijing.volces.com/api/v3",
-        http_client=AsyncClient(),
-    ),
-    temperature=0.8,
-    top_p=0.8,
+    extra_body=extra_params,
 )
