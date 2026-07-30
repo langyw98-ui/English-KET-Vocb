@@ -5,10 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from flow.ket_partner.dialogue_domain import IntentClassification, TranslationEval
 from flow.ket_partner.graph import build_agent
-from flow.ket_partner.dialogue_domain import IntentClassification
 from flow.ket_partner.sentence_domain import NaturalnessResult
-from flow.ket_partner.dialogue_domain import TranslationEval
 from flow.ket_partner.vocab_domain import SentenceTranslation, WordMeaning
 from src.persistence.bootstrap import init_db
 from src.persistence.models import WordRef
@@ -618,9 +617,8 @@ async def test_evaluate_keeps_non_ket_word_in_display_but_skips_stats(setup, mon
     """
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
     from flow.ket_partner.dialogue_domain import WrongWord
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     async def fake_generate(*a, **kw):
         return "The cat splashes in the water."
@@ -1142,8 +1140,7 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     so the next regen's prompt surfaces the structural requirement."""
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     captured: list = []
     # First call splits the target; second call keeps it contiguous.
@@ -1218,8 +1215,7 @@ async def test_generate_node_accepts_placeholder_target_with_substitution(setup,
     """
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     captured: list = []
 
@@ -1319,8 +1315,7 @@ async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
     """
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     async def fake_generate(*a, **kw):
         return "The cat splashes in the water."
@@ -1410,8 +1405,7 @@ async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
     annotation lines."""
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     async def fake_generate(*a, **kw):
         return "The cat sleeps."
@@ -1502,8 +1496,7 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
     with the rejection reason fed back into the prompt via prior_attempts.
     """
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     # First draft is nonsensical; second (regen) is natural.
     generate_seq = iter([
@@ -1856,8 +1849,7 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
     不自然，则应该换个词重新尝试生成'."""
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     # Word 1 ("cat"): 3 attempts all fail naturalness → switch.
     # Word 2 ("dog"): 1 attempt passes naturalness → return.
@@ -1944,8 +1936,7 @@ async def test_word_switch_only_once(setup, monkeypatch):
     the final draft. This prevents infinite loops in the fallback path."""
     from flow.ket_partner import nodes as agent_module
     from flow.ket_partner import sentence_domain as sentence_orchestration_module
-    from flow.ket_partner.sentence_domain import NaturalnessResult
-    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.sentence_domain import NaturalnessResult, ValidationResult
 
     # Word 1 ("cat"): 3 attempts all fail naturalness → switch to "dog".
     # Word 2 ("dog"): 3 attempts all fail naturalness → accept final draft.
