@@ -366,6 +366,34 @@ async def test_generate_sentence_prompt_omits_context_block_when_empty():
     bound.ainvoke.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_generate_sentence_falls_back_on_llm_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回含 target 的模板句,且 mock 确实被调用过。"""
+    from openai import APIError
+
+    llm = MagicMock()
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="llm down",
+            request=MagicMock(),
+            body=None,
+        )
+    )
+    llm.bind = MagicMock(return_value=bound)
+    result = await generate_sentence(
+        llm,
+        target="cat",
+        recent_scaffolding=[],
+        age=8,
+        min_words=5,
+        max_words=12,
+    )
+    assert isinstance(result, str)
+    assert "cat" in result
+    bound.ainvoke.assert_awaited_once()
+
+
 # ===========================================================================
 # Validator Tests
 # ===========================================================================
@@ -736,13 +764,25 @@ async def test_check_naturalness_returns_reject_with_reason():
 
 @pytest.mark.asyncio
 async def test_check_naturalness_fails_open_on_error():
+    """LLM 调用抛 openai.APIError 时,fallback 返回 ok=True,且 mock 确实被调用过。"""
+    from openai import APIError
+
     llm = MagicMock()
     bound = MagicMock()
-    bound.ainvoke = AsyncMock(side_effect=RuntimeError("llm down"))
+    bound.ainvoke = AsyncMock(
+        side_effect=APIError(
+            message="llm down",
+            request=MagicMock(),
+            body=None,
+        )
+    )
     llm.with_structured_output = MagicMock(return_value=bound)
     result = await check_naturalness(llm, "anything")
     assert result.ok is True
     assert result.reason == ""
+    llm.with_structured_output.assert_called_once_with(
+        NaturalnessResult, method="function_calling"
+    )
     bound.ainvoke.assert_awaited_once()
 
 

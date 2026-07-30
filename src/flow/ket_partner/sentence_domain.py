@@ -1,16 +1,27 @@
+import asyncio
 import json
 import random
 import re
 from os.path import dirname, join
 
+import openai
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from flow.common import logger
 from flow.ket_partner.config import KetConfig
 from flow.ket_partner.persistence import KETPartnerRepos
 from flow.ket_partner.vocab_domain import select_target_word
+
+# sentence_domain 内所有 LLM 调用的可重试外部失败类型。
+# 严格按 CLAUDE.md §1.5:只含具体外部失败,不含 ValueError/AttributeError/TypeError
+# 等代码 bug 类型——那些必须直接暴露被测试捕获。
+_LLM_RETRYABLE: tuple[type[BaseException], ...] = (
+    openai.APIError,          # openai SDK 的所有 API 异常基类(APITimeoutError/APIConnectionError/RateLimitError 等)
+    asyncio.TimeoutError,     # asyncio.wait_for 超时
+    ValidationError,          # pydantic Schema 校验失败(LLM 返回畸形结构)
+)
 
 # ---------------------------------------------------------------------------
 # Multi-word Target Matching
@@ -183,7 +194,7 @@ async def generate_sentence(
         response = await creative.ainvoke(messages)
         logger.debug(f"generate_sentence: {response.content.strip()}")
         return response.content.strip()
-    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+    except _LLM_RETRYABLE as e:
         logger.warning(
             f"generate_sentence failed (using fallback template): {e}", exc_info=True
         )
@@ -357,7 +368,7 @@ async def check_naturalness(llm, sentence: str, age: int = 8) -> NaturalnessResu
     ]
     try:
         return await structured.ainvoke(messages)
-    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+    except _LLM_RETRYABLE as e:
         logger.warning(
             f"check_naturalness failed: {e}; accepting by default", exc_info=True
         )
