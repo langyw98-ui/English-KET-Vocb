@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from flow.ket_partner.db import Repos
 from src.api.deps import User, get_agent, get_current_user, get_db, get_llm_key_status, get_settings
 from src.api.llm_key import LlmKeyStatus, _read_current_key
 from src.api.schemas import ChatRequest, ChatResponse
 from src.api.settings import Settings
+from src.persistence.repos import Repos
 
 logger = logging.getLogger("ket_partner")
 
