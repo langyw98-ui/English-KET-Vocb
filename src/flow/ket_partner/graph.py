@@ -31,7 +31,6 @@ def route_after_init(state: BTPKetState) -> str:
 
 
 def route_after_classify(state: BTPKetState) -> str:
-    """Renamed from KETPartnerAgent._route_call2."""
     intent = state.get("intent")
     if intent == "translation":
         return "evaluate_translation"
@@ -43,13 +42,10 @@ def route_after_classify(state: BTPKetState) -> str:
 
 
 async def passthrough_node(state: BTPKetState, config: RunnableConfig) -> dict:
-    """No-op node for conditional_edges branching host. Merges _passthrough
-    + _route_after_init_state (both were no-ops)."""
     return {}
 
 
 def wire_graph(builder: StateGraph, agent: KETPartnerAgent) -> None:
-    """Add all 13 nodes + edges. Extracted from KETPartnerAgent.compile body."""
     builder.add_node("init_state", agent.init_state)
     builder.add_node("classify_intent", agent.classify_intent_node)
     builder.add_node("evaluate_translation", agent.evaluate_translation_node)
@@ -106,12 +102,6 @@ async def build_agent(
     llm_smart: BaseChatModel,
     checkpointer: Any = None,
 ) -> CompiledStateGraph:
-    """Factory: load_config -> KETPartnerAgent -> StateGraph -> wire_graph -> compile.
-    Attaches .agent to the compiled graph for shutdown lifecycle.
-
-    Repos are sourced per-call from ``config["configurable"]["repos"]`` inside
-    node methods, so no ``db`` parameter is needed here.
-    """
     cfg = load_config()
     agent = KETPartnerAgent(llm_flash, llm_smart, cfg)
     builder = StateGraph(BTPKetState)

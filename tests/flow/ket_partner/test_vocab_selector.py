@@ -1,7 +1,7 @@
 import pytest
 
 from flow.ket_partner.config import load_config
-from flow.ket_partner.vocab_selector import rotate_topic, select_target_word
+from flow.ket_partner.vocab_domain import rotate_topic, select_target_word
 from src.persistence.bootstrap import init_db
 from src.persistence.models import WordRef
 from src.persistence.repos import Repos

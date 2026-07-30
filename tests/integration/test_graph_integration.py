@@ -6,10 +6,10 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from flow.ket_partner.graph import build_agent
-from flow.ket_partner.input_classifier import IntentClassification
-from flow.ket_partner.sentence_naturalness import NaturalnessResult
-from flow.ket_partner.translation_evaluator import TranslationEval
-from flow.ket_partner.word_meaning_lookup import SentenceTranslation, WordMeaning
+from flow.ket_partner.dialogue_domain import IntentClassification
+from flow.ket_partner.sentence_domain import NaturalnessResult
+from flow.ket_partner.dialogue_domain import TranslationEval
+from flow.ket_partner.vocab_domain import SentenceTranslation, WordMeaning
 from src.persistence.bootstrap import init_db
 from src.persistence.models import WordRef
 from src.persistence.repos import Repos
@@ -131,7 +131,7 @@ async def test_correct_translation_increments_mastery(setup):
 
 @pytest.mark.asyncio
 async def test_wrong_translation_deducts(setup):
-    from flow.ket_partner.translation_evaluator import WrongWord
+    from flow.ket_partner.dialogue_domain import WrongWord
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         eval_resp=TranslationEval(
@@ -479,7 +479,7 @@ async def test_wrong_word_rendered_and_deducted(setup):
     word must be deducted from mastery (post schema-merge: function words
     now affect mastery — that was the bug motivating the merge).
     """
-    from flow.ket_partner.translation_evaluator import WrongWord
+    from flow.ket_partner.dialogue_domain import WrongWord
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         eval_resp=TranslationEval(
@@ -524,7 +524,7 @@ async def test_evaluate_node_dedupes_duplicate_wrong_words(setup):
     duplicate lines. Dedup by word in evaluate_translation_node so each
     word appears at most once — first entry wins.
     """
-    from flow.ket_partner.translation_evaluator import WrongWord
+    from flow.ket_partner.dialogue_domain import WrongWord
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         eval_resp=TranslationEval(
@@ -562,7 +562,7 @@ async def test_evaluate_node_drops_words_not_in_sentence(setup):
     display should mention it. KET words the LLM correctly flags ('in')
     must still flow through normally on both paths.
     """
-    from flow.ket_partner.translation_evaluator import WrongWord
+    from flow.ket_partner.dialogue_domain import WrongWord
     # LLM flags both a KET word in the sentence (in) and a hallucinated
     # word that isn't (xyzzy).
     llm = _mock_llm(
@@ -616,11 +616,11 @@ async def test_evaluate_keeps_non_ket_word_in_display_but_skips_stats(setup, mon
     saw "你的翻译有误:" with no itemized correction for the non-KET word,
     even though they explicitly got it wrong.
     """
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
-    from flow.ket_partner.translation_evaluator import WrongWord
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
+    from flow.ket_partner.dialogue_domain import WrongWord
 
     async def fake_generate(*a, **kw):
         return "The cat splashes in the water."
@@ -704,7 +704,7 @@ async def test_evaluate_node_drops_word_with_matching_kid_and_correct_translatio
     right by definition must not be marked wrong — drop it before the UI
     renders and before apply_delta decrements mastery.
     """
-    from flow.ket_partner.translation_evaluator import WrongWord
+    from flow.ket_partner.dialogue_domain import WrongWord
     llm = _mock_llm(
         intent_resp=IntentClassification(intent="translation", asked_word=None),
         eval_resp=TranslationEval(
@@ -911,8 +911,8 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
     word are accepted immediately. To force retries through exhaustion we
     use 2 non-KET words per draft.
     """
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     # Sentence sequence: retry 1 → "alpha beta"; retry 2 (final) → "gamma delta".
     # Both have 2 non-KET words so the retry loop keeps regenerating.
@@ -952,8 +952,8 @@ async def test_displayed_sentence_words_are_tracked_not_stale_retry(setup, monke
 async def test_generate_node_regens_when_more_than_one_non_ket(setup, monkeypatch):
     """Acceptance policy: >1 non-KET word must trigger a full regen. (The
     rewrite path was removed — only regen now.)"""
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     call_log = {"generate": 0}
 
@@ -988,8 +988,8 @@ async def test_generate_node_regen_when_sentence_is_duplicate(setup, monkeypatch
     """Regression: 'The cat likes to dance in the rain.' appeared 3 times
     in a row during manual testing. The retry loop must detect an exact
     match against recent sentences and force a full regen."""
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     call_log = {"generate": 0}
     # First call (initial draft) returns the duplicate; second call (regen
@@ -1031,8 +1031,8 @@ async def test_generate_node_passes_non_ket_words_to_regen(setup, monkeypatch):
     must list those words in `avoid_non_ket_words`. Without this, the LLM
     keeps producing the same non-KET word on every retry (e.g., "blocks" /
     "tower" for target "build")."""
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     # Record the kwarg on every call. The first call should have an empty
     # list; the second call must contain the first attempt's non-KET words.
@@ -1082,8 +1082,8 @@ async def test_generate_node_passes_duplicate_sentence_to_regen(setup, monkeypat
     generate call must surface the offending sentence in `prior_attempts`
     with reason_kind="duplicate" so the LLM gets an explicit "do not output
     that exact sentence" callout — not just the soft avoid_sentences list."""
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     captured_attempts: list = []
     duplicate = "The cat likes to dance."
@@ -1140,10 +1140,10 @@ async def test_generate_node_regens_when_multi_word_target_is_split(setup, monke
     player'), the retry loop must detect the missing contiguous substring
     and record the failure in `prior_attempts` with reason_kind="target_split"
     so the next regen's prompt surfaces the structural requirement."""
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     captured: list = []
     # First call splits the target; second call keeps it contiguous.
@@ -1216,10 +1216,10 @@ async def test_generate_node_accepts_placeholder_target_with_substitution(setup,
     Fix: agent.py uses target_in_sentence which compiles a pattern that
     treats the placeholder as a 1-3 word substitution slot.
     """
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     captured: list = []
 
@@ -1273,8 +1273,8 @@ async def test_generate_node_scaffolding_passes_last_n_sentences(setup, monkeypa
     """The `recent_scaffolding` argument passed to generate_sentence must
     reflect the last N SENTENCES' worth of words (flattened), not just the
     last N words of one sentence (the pre-fix bug)."""
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     captured_args = {}
 
@@ -1317,10 +1317,10 @@ async def test_single_non_ket_word_accepted_with_annotation(setup, monkeypatch):
     accepted (no regen) and that word's context meaning is appended so
     the kid can still translate the sentence.
     """
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     async def fake_generate(*a, **kw):
         return "The cat splashes in the water."
@@ -1370,9 +1370,9 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
     must accept the sentence and annotate ALL non-KET words so the kid has
     a chance to translate.
     """
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     async def fake_generate(*a, **kw):
         return "alpha bravo the cat"
@@ -1408,10 +1408,10 @@ async def test_many_non_ket_after_exhaustion_accepts_with_all_annotations(setup,
 async def test_all_ket_sentence_has_no_annotations(setup, monkeypatch):
     """A clean all-KET sentence must NOT trigger the lookup or render any
     annotation lines."""
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     async def fake_generate(*a, **kw):
         return "The cat sleeps."
@@ -1501,9 +1501,9 @@ async def test_naturalness_fail_triggers_regen_with_hint(setup, monkeypatch):
     check_naturalness after KET+dedup pass, and on rejection, regenerate
     with the rejection reason fed back into the prompt via prior_attempts.
     """
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     # First draft is nonsensical; second (regen) is natural.
     generate_seq = iter([
@@ -1573,8 +1573,8 @@ async def test_naturalness_check_skipped_when_ket_validation_fails(setup, monkey
     retry path is the existing rewrite/regen branch and check_naturalness
     must NOT be invoked.
     """
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     naturalness_calls = {"count": 0}
 
@@ -1618,7 +1618,7 @@ async def test_generate_node_marks_target_distinct_from_scaffolding(setup, monke
     monkeypatch _pick_new_word to deterministically return 'cat'. The mock
     sentence "The cat is on the bed." includes both 'cat' (target) and 'bed'
     (scaffolding) so both branches of the assertion are exercised."""
-    from flow.ket_partner import vocab_selector
+    from flow.ket_partner import vocab_domain as vocab_selector
 
     async def fake_pick_new_word(repos, profile):
         return WordRef(word="cat", context="")
@@ -1661,9 +1661,9 @@ async def test_generate_node_handles_multi_word_target(temp_db_path, monkeypatch
     The agent must add the target itself so stats tracking marks it as
     'learning' and downstream filters (which use last_sentence_words) still
     see the right lexical unit."""
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner import vocab_selector
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner import vocab_domain as vocab_selector
+    from flow.ket_partner.sentence_domain import NaturalnessResult
 
     csv_text = (
         "word,part_of_speech,topic,context\n"
@@ -1798,9 +1798,9 @@ async def test_overflow_picks_least_bad_after_exhaustion(setup, monkeypatch):
     agent must accept the one with the FEWEST non-KET words (least bad), not
     the final draft. Implements the user spec: '如果存在非KET单词数量超限的
     情况，应该输出这个句子' — picking the least-bad tolerable failure."""
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     # 3 attempts with non_ket_counts 4, 2, 3 — second is least bad.
     sentence_seq = iter([
@@ -1854,10 +1854,10 @@ async def test_all_naturalness_triggers_word_switch(setup, monkeypatch):
     cycle. The kid sees the new word's sentence, NOT any of the original
     word's failed attempts. Implements the user spec: '如果3次都是因为表达
     不自然，则应该换个词重新尝试生成'."""
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     # Word 1 ("cat"): 3 attempts all fail naturalness → switch.
     # Word 2 ("dog"): 1 attempt passes naturalness → return.
@@ -1942,10 +1942,10 @@ async def test_word_switch_only_once(setup, monkeypatch):
     """Word switch is bounded to ONCE. If the switched-to word also fails all
     3 attempts on naturalness, the agent must NOT switch again — it accepts
     the final draft. This prevents infinite loops in the fallback path."""
-    from flow.ket_partner import agent as agent_module
-    from flow.ket_partner import sentence_orchestration as sentence_orchestration_module
-    from flow.ket_partner.sentence_naturalness import NaturalnessResult
-    from flow.ket_partner.sentence_validator import ValidationResult
+    from flow.ket_partner import nodes as agent_module
+    from flow.ket_partner import sentence_domain as sentence_orchestration_module
+    from flow.ket_partner.sentence_domain import NaturalnessResult
+    from flow.ket_partner.sentence_domain import ValidationResult
 
     # Word 1 ("cat"): 3 attempts all fail naturalness → switch to "dog".
     # Word 2 ("dog"): 3 attempts all fail naturalness → accept final draft.

@@ -2,7 +2,7 @@ import tempfile
 
 import pytest
 
-from flow.ket_partner.sentence_validator import validate_sentence
+from flow.ket_partner.sentence_domain import validate_sentence
 from src.persistence.bootstrap import init_db
 from src.persistence.repos import Repos
 

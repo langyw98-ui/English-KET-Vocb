@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.input_classifier import (
+from flow.ket_partner.dialogue_domain import (
     IntentClassification,
     classify_intent,
 )

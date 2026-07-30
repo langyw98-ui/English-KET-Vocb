@@ -1,7 +1,7 @@
 
 import pytest
 
-from flow.ket_partner.multi_word_target import (
+from flow.ket_partner.sentence_domain import (
     build_target_pattern,
     find_placeholder,
     has_placeholder,

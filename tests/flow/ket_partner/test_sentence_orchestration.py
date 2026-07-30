@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_orchestration import (
+from flow.ket_partner.sentence_domain import (
+    ValidationResult,
     apply_multiword_target_patch,
     generate_with_fallback,
     validate_and_categorize,
 )
-from flow.ket_partner.sentence_validator import ValidationResult
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -83,10 +83,10 @@ async def test_validate_and_categorize_passes_clean_sentence(
     naturalness_mock = AsyncMock(return_value=MagicMock(ok=True, reason=""))
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_sentence", validate_mock
+        "flow.ket_partner.sentence_domain.validate_sentence", validate_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.check_naturalness", naturalness_mock
+        "flow.ket_partner.sentence_domain.check_naturalness", naturalness_mock
     )
 
     result = await validate_and_categorize(
@@ -120,10 +120,10 @@ async def test_validate_and_categorize_target_split_reason(
     naturalness_mock = AsyncMock(return_value=MagicMock(ok=True))
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_sentence", validate_mock
+        "flow.ket_partner.sentence_domain.validate_sentence", validate_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.check_naturalness", naturalness_mock
+        "flow.ket_partner.sentence_domain.check_naturalness", naturalness_mock
     )
 
     result = await validate_and_categorize(
@@ -157,10 +157,10 @@ async def test_validate_and_categorize_non_ket_overflow_reason(
     naturalness_mock = AsyncMock(return_value=MagicMock(ok=True))
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_sentence", validate_mock
+        "flow.ket_partner.sentence_domain.validate_sentence", validate_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.check_naturalness", naturalness_mock
+        "flow.ket_partner.sentence_domain.check_naturalness", naturalness_mock
     )
 
     result = await validate_and_categorize(
@@ -190,10 +190,10 @@ async def test_validate_and_categorize_duplicate_reason(
     naturalness_mock = AsyncMock(return_value=MagicMock(ok=True))
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_sentence", validate_mock
+        "flow.ket_partner.sentence_domain.validate_sentence", validate_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.check_naturalness", naturalness_mock
+        "flow.ket_partner.sentence_domain.check_naturalness", naturalness_mock
     )
 
     result = await validate_and_categorize(
@@ -229,10 +229,10 @@ async def test_validate_and_categorize_naturalness_reason(
     naturalness_mock = AsyncMock(return_value=unnatural)
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_sentence", validate_mock
+        "flow.ket_partner.sentence_domain.validate_sentence", validate_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.check_naturalness", naturalness_mock
+        "flow.ket_partner.sentence_domain.check_naturalness", naturalness_mock
     )
 
     result = await validate_and_categorize(
@@ -279,14 +279,14 @@ async def test_generate_with_fallback_returns_first_passing(
     select_mock = AsyncMock()  # must not be called on the happy path
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.generate_sentence", gen_mock
+        "flow.ket_partner.sentence_domain.generate_sentence", gen_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_and_categorize",
+        "flow.ket_partner.sentence_domain.validate_and_categorize",
         validate_orch_mock,
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.select_target_word", select_mock
+        "flow.ket_partner.sentence_domain.select_target_word", select_mock
     )
 
     out = await generate_with_fallback(
@@ -368,14 +368,14 @@ async def test_generate_with_fallback_switches_target_on_all_naturalness_failure
     select_mock = AsyncMock(return_value=new_ref)
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.generate_sentence", gen_mock
+        "flow.ket_partner.sentence_domain.generate_sentence", gen_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_and_categorize",
+        "flow.ket_partner.sentence_domain.validate_and_categorize",
         validate_orch_mock,
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.select_target_word", select_mock
+        "flow.ket_partner.sentence_domain.select_target_word", select_mock
     )
 
     out = await generate_with_fallback(
@@ -464,17 +464,17 @@ async def test_generate_with_fallback_accepts_overflow_after_retry_limit(
     validate_sentence_mock = AsyncMock(return_value=refreshed_result)
 
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.generate_sentence", gen_mock
+        "flow.ket_partner.sentence_domain.generate_sentence", gen_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_and_categorize",
+        "flow.ket_partner.sentence_domain.validate_and_categorize",
         validate_orch_mock,
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.select_target_word", select_mock
+        "flow.ket_partner.sentence_domain.select_target_word", select_mock
     )
     monkeypatch.setattr(
-        "flow.ket_partner.sentence_orchestration.validate_sentence",
+        "flow.ket_partner.sentence_domain.validate_sentence",
         validate_sentence_mock,
     )
 

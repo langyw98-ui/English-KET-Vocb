@@ -1,11 +1,98 @@
+from __future__ import annotations
+
 import json
+from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from flow.common import logger
+from flow.ket_partner.persistence import KETPartnerRepos
+from flow.ket_partner.state import BTPKetState
 
-_SYSTEM = """You evaluate a Chinese kid's translation of an English sentence.
+# ---------------------------------------------------------------------------
+# Input Intent Classification
+# ---------------------------------------------------------------------------
+
+_CLASSIFIER_SYSTEM = """You classify a Chinese kid's input as one of these intents:
+- translation: kid attempts to translate the English sentence
+- idk: kid explicitly says "I don't know" / "我不会" / "idk" / "不知道"
+- asks_meaning: kid asks what a specific word means
+- off_topic: kid chats about something else entirely
+- non_compliant: inappropriate / unsafe content
+
+If asks_meaning, extract the asked_word (lowercase English). Otherwise asked_word is null.
+"""
+
+
+class IntentClassification(BaseModel):
+    intent: Literal["translation", "idk", "asks_meaning", "off_topic", "non_compliant"]
+    asked_word: str | None = Field(default=None)
+
+
+async def classify_intent(llm, last_english_sentence: str | None, kid_input: str) -> IntentClassification:
+    structured = llm.with_structured_output(IntentClassification, method="function_calling")
+    messages = [
+        SystemMessage(content=_CLASSIFIER_SYSTEM),
+        HumanMessage(content=f"English sentence: {last_english_sentence or '(none)'}"),
+        HumanMessage(content=f"Kid's input: {kid_input}"),
+    ]
+    try:
+        return await structured.ainvoke(messages)
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(
+            f"classify_intent failed: {e}; defaulting to translation", exc_info=True
+        )
+        return IntentClassification(intent="translation", asked_word=None)
+
+
+# ---------------------------------------------------------------------------
+# Student Profile Summarizer
+# ---------------------------------------------------------------------------
+
+_PROFILE_SYSTEM = """你分析一个小朋友的 KET 词汇学习历史,增量更新学习画像。
+- 学习聚焦,不分析兴趣 / 性格 / 情感
+- 输出全部中文
+- weakness_words: 持续挣扎的词或词类(从历史中提取)
+- dialogue_strategy: 2-3 句具体可执行的建议(哪些词加强 / 哪些解释方式有效)
+- 增量更新: 如果旧的 weakness_words 仍准确,保留;否则替换
+"""
+
+
+class ProfileSummary(BaseModel):
+    weakness_words: list[str] = Field(default_factory=list)
+    dialogue_strategy: str = ""
+
+
+async def run_profile_summary(llm, repos: KETPartnerRepos) -> None:
+    profile = await repos.profile.get()
+    recent = await repos.log.recent(limit=20)
+    log_text = "\n".join(f"[{r['role']}] {r['content']}" for r in recent)
+
+    structured = llm.with_structured_output(ProfileSummary, method="function_calling")
+    messages = [
+        SystemMessage(content=_PROFILE_SYSTEM),
+        HumanMessage(content=f"当前 weakness: {profile['weakness_words']}"),
+        HumanMessage(content=f"当前 strategy: {profile['dialogue_strategy']}"),
+        HumanMessage(content=f"最近对话:\n{log_text}"),
+    ]
+    try:
+        summary = await structured.ainvoke(messages)
+        await repos.profile.update(
+            weakness_words=summary.weakness_words,
+            dialogue_strategy=summary.dialogue_strategy,
+        )
+    except (TimeoutError, RuntimeError, ValueError, AttributeError, TypeError) as e:
+        logger.warning(
+            f"profile summary failed: {e}; keeping old profile", exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Translation Evaluation
+# ---------------------------------------------------------------------------
+
+_EVALUATOR_SYSTEM = """You evaluate a Chinese kid's translation of an English sentence.
 
 METHOD (do this silently before filling the schema):
 1. ALIGN each English word in "Sentence words to check" to the kid's Chinese characters. Chinese word order differs from English — verbs often sit at the end or middle (e.g. "The cat slipped on the ice" → "猫 在冰上 滑倒"). Map each English word to the kid's characters that mean the SAME thing.
@@ -78,24 +165,12 @@ class WrongWord(BaseModel):
 
 class TranslationEval(BaseModel):
     correct_translation: str
-    # True iff the kid's translation faithfully conveys the whole sentence
-    # meaning. The per-word wrong_words list catches misaligned/omitted
-    # words; overall_correct catches STRUCTURAL errors that no single word
-    # owns — most commonly the kid adding content that isn't in the English
-    # original (e.g. "玩球" for "play") or distorting the sentence's overall
-    # meaning. Default True so a missing/old field never falsely punishes.
     overall_correct: bool = True
     wrong_words: list[WrongWord] = Field(default_factory=list)
 
     @field_validator("wrong_words", mode="before")
     @classmethod
     def _coerce_wrong_words(cls, v):
-        # qwen via dashscope function_calling occasionally emits wrong_words
-        # as a JSON-encoded STRING instead of an array (most often when the
-        # list is long or contains many special chars). The content inside
-        # is valid — just wrap-unwrapped. Parse it back to a list so the
-        # validation passes; unparseable strings fall through to the
-        # default_factory empty list via the except branch in evaluate_translation.
         if isinstance(v, str):
             try:
                 logger.debug(f"coercing wrong_words from string: {v}")
@@ -118,7 +193,7 @@ async def evaluate_translation(
     if target_context:
         target_line += f" (sense: {target_context})"
     messages = [
-        SystemMessage(content=_SYSTEM),
+        SystemMessage(content=_EVALUATOR_SYSTEM),
         HumanMessage(content=f"English sentence: {sentence}"),
         HumanMessage(content=f"Sentence words to check: {words}"),
         HumanMessage(content=target_line),
@@ -132,3 +207,42 @@ async def evaluate_translation(
             exc_info=True,
         )
         return TranslationEval(correct_translation="", wrong_words=[])
+
+
+# ---------------------------------------------------------------------------
+# Output Formatting
+# ---------------------------------------------------------------------------
+
+def format_output_text(state: BTPKetState, new_sentence: str) -> str:
+    intent = state.get("intent")
+    lines = []
+
+    if intent == "translation":
+        wrong = state.get("wrong_words") or []
+        sentence_t = state.get("sentence_translation", "")
+        overall_correct = state.get("overall_correct")
+        if wrong:
+            if sentence_t:
+                lines.append(f"正确翻译：{sentence_t}")
+            lines.append("你的翻译有误:")
+            for entry in wrong:
+                word = entry.get("word", "?")
+                correct = entry.get("correct_translation", "?")
+                lines.append(f" {word} 的意思是：{correct}")
+        elif overall_correct is False:
+            if sentence_t:
+                lines.append(f"正确翻译：{sentence_t}")
+            lines.append("你的翻译和原句意思有些偏差。")
+    elif intent == "idk":
+        sentence_t = state.get("sentence_translation", "")
+        if sentence_t:
+            lines.append(f"正确翻译：{sentence_t}")
+
+    lines.append("请把这句译成中文:")
+    lines.append(f'"{new_sentence}"')
+    for ann in state.get("non_ket_annotations") or []:
+        word = ann.get("word", "?")
+        meaning = ann.get("meaning", "")
+        if meaning:
+            lines.append(f"{word} 的意思是：{meaning}")
+    return "\n".join(lines)

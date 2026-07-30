@@ -1,4 +1,4 @@
-from flow.ket_partner.output_format import format_output_text
+from flow.ket_partner.dialogue_domain import format_output_text
 
 
 def test_format_output_translation_no_wrong():

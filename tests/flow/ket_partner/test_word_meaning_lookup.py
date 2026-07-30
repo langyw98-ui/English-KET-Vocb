@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.word_meaning_lookup import WordMeaning, lookup_word_meaning
+from flow.ket_partner.vocab_domain import WordMeaning, lookup_word_meaning
 
 
 def _make_llm(return_value):

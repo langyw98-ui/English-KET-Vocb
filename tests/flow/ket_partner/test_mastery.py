@@ -2,7 +2,7 @@ import tempfile
 
 import pytest
 
-from flow.ket_partner.mastery import apply_mastery_updates
+from flow.ket_partner.vocab_domain import apply_mastery_updates
 from src.persistence.bootstrap import init_db
 from src.persistence.repos import Repos
 

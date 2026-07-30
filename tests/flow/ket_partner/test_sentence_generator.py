@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_generator import generate_sentence
+from flow.ket_partner.sentence_domain import generate_sentence
 
 
 def _make_llm(return_value: str):

@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.profile_summarizer import (
+from flow.ket_partner.dialogue_domain import (
     ProfileSummary,
     run_profile_summary,
 )

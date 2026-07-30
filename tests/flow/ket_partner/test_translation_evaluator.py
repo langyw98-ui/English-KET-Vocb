@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.translation_evaluator import (
+from flow.ket_partner.dialogue_domain import (
     TranslationEval,
     WrongWord,
     evaluate_translation,

@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.ket_partner.sentence_naturalness import (
-    _SYSTEM,
+from flow.ket_partner.sentence_domain import (
+    _NATURALNESS_SYSTEM as _SYSTEM,
     NaturalnessResult,
     check_naturalness,
 )
