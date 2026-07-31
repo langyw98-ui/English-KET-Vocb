@@ -10,7 +10,14 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from flow.common import logger
 from flow.ket_partner.persistence import KETPartnerRepos
-from flow.ket_partner.state import IDK, TRANSLATION, BTPKetState
+from flow.ket_partner.state import (
+    ASKS_MEANING,
+    IDK,
+    NON_COMPLIANT,
+    OFF_TOPIC,
+    TRANSLATION,
+    BTPKetState,
+)
 
 # dialogue_domain 内所有 LLM 调用的可重试外部失败类型。
 # 严格按 CLAUDE.md §1.5:只含具体外部失败,不含 ValueError/AttributeError/TypeError
@@ -226,7 +233,7 @@ async def evaluate_translation(
 
 def format_output_text(state: BTPKetState, new_sentence: str) -> str:
     intent = state.get("intent")
-    lines = []
+    lines: list[str] = []
 
     if intent == TRANSLATION:
         wrong = state.get("wrong_words") or []
@@ -248,6 +255,18 @@ def format_output_text(state: BTPKetState, new_sentence: str) -> str:
         sentence_t = state.get("sentence_translation", "")
         if sentence_t:
             lines.append(f"正确翻译：{sentence_t}")
+    elif intent == ASKS_MEANING:
+        # 已在 explain_meaning_node 输出意思,此处无需额外处理
+        pass
+    elif intent == OFF_TOPIC:
+        # redirect_to_translate_node 已处理
+        pass
+    elif intent == NON_COMPLIANT:
+        # compliance_redirect_node 已处理
+        pass
+    else:
+        # intent is None 或未知值:不补充额外文案,只输出新句
+        logger.debug(f"format_output_text: intent={intent!r}, no specific branch")
 
     lines.append("请把这句译成中文:")
     lines.append(f'"{new_sentence}"')

@@ -31,6 +31,8 @@ _DEFAULT_AFTER_CLASSIFY = "skip"
 def route_by_intent(state: BTPKetState) -> str:
     """format_output_or_branch 之后路由,根据 intent 选下一节点。"""
     intent = state.get("intent")
+    if intent is None:
+        return "select_target_word"
     if intent in (TRANSLATION, IDK):
         return "select_target_word"
     if intent == ASKS_MEANING:

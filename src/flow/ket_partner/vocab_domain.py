@@ -222,6 +222,10 @@ async def lookup_sentence_translation(llm, sentence: str) -> SentenceTranslation
 
 async def apply_mastery_updates(state: BTPKetState, repos: KETPartnerRepos) -> None:
     intent = state.get("intent")
+    if intent is None:
+        logger.debug("apply_mastery_updates: intent is None, skip")
+        return
+
     if intent == TRANSLATION:
         last_words = state.get("last_sentence_words") or []
         target = state.get("last_target_word")
