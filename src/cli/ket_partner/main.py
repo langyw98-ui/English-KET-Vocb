@@ -85,7 +85,6 @@ async def main() -> None:
                         exc_info=True,
                     )
             await db.close()
-            # chat_logger.close_session() — REMOVED, __exit__ handles it
 
 
 if __name__ == "__main__":
