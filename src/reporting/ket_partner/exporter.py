@@ -10,6 +10,7 @@ Key changes vs old:
 Single-writer notes (CLAUDE.md §三):
 - output_path file: only export_learning_report writes (single call site per request)
 """
+import asyncio
 from pathlib import Path
 
 from flow.common import logger
@@ -17,6 +18,15 @@ from flow.ket_partner.config import KetConfig
 from flow.ket_partner.persistence import KETPartnerRepos
 from src.reporting.ket_partner.categories import group_by_category
 from src.reporting.ket_partner.markdown import render_markdown
+
+
+def _write_report_file(path: Path, content: str) -> None:
+    """Sync file writer wrapped by asyncio.to_thread in async callers.
+
+    §7.2: async functions must not perform sync IO; offload to thread pool.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
 
 
 async def export_learning_report(
@@ -35,8 +45,7 @@ async def export_learning_report(
         out_p = Path("storage/reports") / out_p
     out_p.parent.mkdir(parents=True, exist_ok=True)
     content = await render_report_text(repos, cfg)
-    with open(out_p, "w", encoding="utf-8") as f:  # noqa: ASYNC230
-        f.write(content)
+    await asyncio.to_thread(_write_report_file, out_p, content)
     logger.info(f"Exported learning report to {out_p}")
     return str(out_p)
 
