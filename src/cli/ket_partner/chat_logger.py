@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from types import TracebackType
 from typing import TextIO
 
 
@@ -42,7 +43,22 @@ class ChatLogger:
     def close_session(self) -> None:
         if self._fp is None:
             return
-        self._fp.write("\n" + "-" * 60 + "\n")
-        self._fp.write(f"Session ended: {datetime.now():%H:%M:%S}\n")
-        self._fp.close()
-        self._fp = None
+        try:
+            self._fp.write("\n" + "-" * 60 + "\n")
+            self._fp.write(f"Session ended: {datetime.now():%H:%M:%S}\n")
+        finally:
+            self._fp.close()
+            self._fp = None
+
+    def __enter__(self) -> "ChatLogger":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        # 兜底关闭:无论 with 块内是否抛异常,都尝试关闭当前 session。
+        # close_session 内部已判 _fp is None,二次调用安全。
+        self.close_session()

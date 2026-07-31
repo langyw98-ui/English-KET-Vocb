@@ -40,8 +40,12 @@ def _install_wiring(monkeypatch, fake_build: AsyncMock) -> None:
     fake_build.return_value = fake_agent
     monkeypatch.setattr("src.cli.ket_partner.main.build_agent", fake_build)
 
-    # ChatLogger: sync class; instance methods are sync.
+    # ChatLogger: sync class; instance methods are sync. Now used as a context
+    # manager (`with ChatLogger(...) as chat_logger`), so __enter__ must return
+    # the same fake instance for the assertions to see it.
     fake_chat_logger = MagicMock(name="chat_logger")
+    fake_chat_logger.__enter__ = MagicMock(return_value=fake_chat_logger)
+    fake_chat_logger.__exit__ = MagicMock(return_value=None)
     fake_chat_logger_class = MagicMock(name="ChatLogger", return_value=fake_chat_logger)
     monkeypatch.setattr("src.cli.ket_partner.main.ChatLogger", fake_chat_logger_class)
 
@@ -80,11 +84,16 @@ async def test_main_initializes_and_loops(monkeypatch):
     # /quit was handled, and that handle raised ExitLoop to break the loop.
     cmd_handler_instance = main_mod.CommandHandler.return_value
     assert cmd_handler_instance.handle.await_count == 1
-    # Cleanup path: db.close + chat_logger.close_session both ran.
+    # Cleanup path: db.close ran inside the with block's inner finally.
     db = main_mod.init_db.return_value
     assert db.close.await_count == 1
+    # ChatLogger is now used as a context manager; __exit__ runs once when the
+    # with block exits (whether cleanly or via exception). Production code's
+    # __exit__ internally calls close_session, but on a MagicMock __exit__ does
+    # not invoke close_session — so we assert __exit__ was triggered instead
+    # (the public contract of the with statement).
     chat_logger_instance = main_mod.ChatLogger.return_value
-    assert chat_logger_instance.close_session.call_count == 1
+    assert chat_logger_instance.__exit__.call_count == 1
 
 
 @pytest.mark.asyncio

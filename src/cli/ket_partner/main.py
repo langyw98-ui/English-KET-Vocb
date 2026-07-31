@@ -38,54 +38,54 @@ async def main() -> None:
     await repos.log.append_session_start()
     agent = await build_agent(default_llm_service)
 
-    chat_logger = ChatLogger(log_dir="storage/logs")
-    chat_logger.start_session(nickname_kid)
-    cmd_handler = CommandHandler(repos, chat_logger)
+    with ChatLogger(log_dir="storage/logs") as chat_logger:
+        chat_logger.start_session(nickname_kid)
+        cmd_handler = CommandHandler(repos, chat_logger)
 
-    messages: list = []
-    turn_id = 1
-    try:
-        while True:
-            user_input = await asyncio.to_thread(input, "用户输入: ")
-            user_input = user_input.strip()
-            if not user_input:
-                continue
-            if user_input.startswith("/"):
-                try:
-                    await cmd_handler.handle(user_input)
-                except ExitLoop:
-                    break
-                continue
+        messages: list = []
+        turn_id = 1
+        try:
+            while True:
+                user_input = await asyncio.to_thread(input, "用户输入: ")
+                user_input = user_input.strip()
+                if not user_input:
+                    continue
+                if user_input.startswith("/"):
+                    try:
+                        await cmd_handler.handle(user_input)
+                    except ExitLoop:
+                        break
+                    continue
 
-            messages.append(HumanMessage(content=user_input))
-            config = {
-                "configurable": {
-                    "thread_id": "main",
-                    "user_id": "default",
-                    "repos": repos,
-                    "user_info": {"nickname": nickname_kid, "age": age},
+                messages.append(HumanMessage(content=user_input))
+                config = {
+                    "configurable": {
+                        "thread_id": "main",
+                        "user_id": "default",
+                        "repos": repos,
+                        "user_info": {"nickname": nickname_kid, "age": age},
+                    }
                 }
-            }
-            response = await agent.ainvoke({"messages": messages[-5:]}, config=config)
-            ai_reply = response["messages"][-1].content
-            messages.append(response["messages"][-1])
+                response = await agent.ainvoke({"messages": messages[-5:]}, config=config)
+                ai_reply = response["messages"][-1].content
+                messages.append(response["messages"][-1])
 
-            chat_logger.log_turn(turn_id, "user", user_input)
-            chat_logger.log_turn(turn_id, "AI", ai_reply)
-            print(f"AI: {ai_reply}\n")
-            turn_id += 1
-    finally:
-        agent_instance = getattr(agent, "agent", None)
-        if agent_instance is not None:
-            try:
-                await agent_instance.aclose()
-            except (RuntimeError, OSError) as e:
-                logger.warning(
-                    f"agent.aclose() failed during shutdown: {e}",
-                    exc_info=True,
-                )
-        await db.close()
-        chat_logger.close_session()
+                chat_logger.log_turn(turn_id, "user", user_input)
+                chat_logger.log_turn(turn_id, "AI", ai_reply)
+                print(f"AI: {ai_reply}\n")
+                turn_id += 1
+        finally:
+            agent_instance = getattr(agent, "agent", None)
+            if agent_instance is not None:
+                try:
+                    await agent_instance.aclose()
+                except (RuntimeError, OSError) as e:
+                    logger.warning(
+                        f"agent.aclose() failed during shutdown: {e}",
+                        exc_info=True,
+                    )
+            await db.close()
+            # chat_logger.close_session() — REMOVED, __exit__ handles it
 
 
 if __name__ == "__main__":
