@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from flow.common import logger
 from src.persistence.models import MASTERY_CAP, WordRef, derive_status
 
 
@@ -337,6 +338,7 @@ class ProfileRepo:
 
     async def update(self, **fields) -> None:
         if not fields:
+            logger.warning("ProfileRepo.update called with empty fields; no-op")
             return
         profile_allowed = {
             "total_turns",
