@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field, ValidationError
 from flow.common import logger
 from flow.ket_partner.config import KetConfig
 from flow.ket_partner.persistence import KETPartnerRepos
-from flow.ket_partner.state import BTPKetState
+from flow.ket_partner.state import (
+    ASKS_MEANING,
+    IDK,
+    TRANSLATION,
+    BTPKetState,
+)
 
 if TYPE_CHECKING:
     from src.persistence.models import WordRef
@@ -217,7 +222,7 @@ async def lookup_sentence_translation(llm, sentence: str) -> SentenceTranslation
 
 async def apply_mastery_updates(state: BTPKetState, repos: KETPartnerRepos) -> None:
     intent = state.get("intent")
-    if intent == "translation":
+    if intent == TRANSLATION:
         last_words = state.get("last_sentence_words") or []
         target = state.get("last_target_word")
         target_ctx = state.get("last_target_context") or ""
@@ -230,12 +235,12 @@ async def apply_mastery_updates(state: BTPKetState, repos: KETPartnerRepos) -> N
             ctx = target_ctx if w == target else ""
             delta = -1 if w in wrong else 1
             await repos.stats.apply_delta(w, context=ctx, delta=delta, exposed=False)
-    elif intent == "idk":
+    elif intent == IDK:
         target = state.get("last_target_word")
         if target:
             target_ctx = state.get("last_target_context") or ""
             await repos.stats.apply_delta(target, context=target_ctx, delta=-1, exposed=False)
-    elif intent == "asks_meaning":
+    elif intent == ASKS_MEANING:
         asked = state.get("asked_word")
         if asked:
             target = state.get("last_target_word")

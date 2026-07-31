@@ -4,6 +4,15 @@ from langchain_core.messages import AnyMessage
 
 KetIntent = Literal["translation", "asks_meaning", "idk", "off_topic", "non_compliant"]
 
+# Intent 常量:消除业务代码中的魔法字符串。
+# 字面量与 KetIntent Literal 完全一致,类型系统保证不会写错。
+# 测试 test_intent_constants_match_literal 守护二者一致性。
+TRANSLATION: KetIntent = "translation"
+IDK: KetIntent = "idk"
+ASKS_MEANING: KetIntent = "asks_meaning"
+OFF_TOPIC: KetIntent = "off_topic"
+NON_COMPLIANT: KetIntent = "non_compliant"
+
 
 class BTPKetState(TypedDict):
     """

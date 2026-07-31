@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from flow.common import logger
 from flow.ket_partner.persistence import KETPartnerRepos
-from flow.ket_partner.state import BTPKetState
+from flow.ket_partner.state import IDK, TRANSLATION, BTPKetState
 
 # dialogue_domain 内所有 LLM 调用的可重试外部失败类型。
 # 严格按 CLAUDE.md §1.5:只含具体外部失败,不含 ValueError/AttributeError/TypeError
@@ -228,7 +228,7 @@ def format_output_text(state: BTPKetState, new_sentence: str) -> str:
     intent = state.get("intent")
     lines = []
 
-    if intent == "translation":
+    if intent == TRANSLATION:
         wrong = state.get("wrong_words") or []
         sentence_t = state.get("sentence_translation", "")
         overall_correct = state.get("overall_correct")
@@ -244,7 +244,7 @@ def format_output_text(state: BTPKetState, new_sentence: str) -> str:
             if sentence_t:
                 lines.append(f"正确翻译：{sentence_t}")
             lines.append("你的翻译和原句意思有些偏差。")
-    elif intent == "idk":
+    elif intent == IDK:
         sentence_t = state.get("sentence_translation", "")
         if sentence_t:
             lines.append(f"正确翻译：{sentence_t}")

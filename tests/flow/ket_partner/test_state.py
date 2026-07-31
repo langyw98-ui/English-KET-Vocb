@@ -47,3 +47,23 @@ def test_ket_intent_matches_classification_schema():
         f"KetIntent 与 IntentClassification.intent 不一致: "
         f"state={state_literals}, schema={schema_literals}"
     )
+
+
+def test_intent_constants_match_literal():
+    """5 个常量值必须与 KetIntent Literal 完全一致,且互不相同。"""
+    from typing import get_args
+
+    from flow.ket_partner.state import (
+        ASKS_MEANING,
+        IDK,
+        NON_COMPLIANT,
+        OFF_TOPIC,
+        TRANSLATION,
+        KetIntent,
+    )
+
+    literals = set(get_args(KetIntent))
+    constants = {TRANSLATION, IDK, ASKS_MEANING, OFF_TOPIC, NON_COMPLIANT}
+    assert literals == constants, (
+        f"KetIntent Literal 与常量集合不一致: literal={literals}, constant={constants}"
+    )

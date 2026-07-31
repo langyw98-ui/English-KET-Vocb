@@ -8,18 +8,36 @@ from langgraph.graph.state import CompiledStateGraph
 from flow.common import LlmService, default_llm_service
 from flow.ket_partner.agent import KETPartnerAgent
 from flow.ket_partner.config import load_config
-from flow.ket_partner.state import BTPKetState
+from flow.ket_partner.state import (
+    ASKS_MEANING,
+    IDK,
+    NON_COMPLIANT,
+    OFF_TOPIC,
+    TRANSLATION,
+    BTPKetState,
+    KetIntent,
+)
+
+# classify_intent_node 之后路由表:每个 intent 对应下一个节点名。
+# OFF_TOPIC / NON_COMPLIANT 不在此分支,route_after_classify 返回 _DEFAULT_AFTER_CLASSIFY。
+_ROUTE_AFTER_CLASSIFY: dict[KetIntent, str] = {
+    TRANSLATION: "evaluate_translation",
+    IDK: "lookup_target_meaning",
+    ASKS_MEANING: "lookup_asked_meaning",
+}
+_DEFAULT_AFTER_CLASSIFY = "skip"
 
 
 def route_by_intent(state: BTPKetState) -> str:
+    """format_output_or_branch 之后路由,根据 intent 选下一节点。"""
     intent = state.get("intent")
-    if intent in ("translation", "idk"):
+    if intent in (TRANSLATION, IDK):
         return "select_target_word"
-    if intent == "asks_meaning":
+    if intent == ASKS_MEANING:
         return "explain_meaning"
-    if intent == "off_topic":
+    if intent == OFF_TOPIC:
         return "redirect_to_translate"
-    if intent == "non_compliant":
+    if intent == NON_COMPLIANT:
         return "compliance_redirect"
     return "select_target_word"
 
@@ -32,13 +50,9 @@ def route_after_init(state: BTPKetState) -> str:
 
 def route_after_classify(state: BTPKetState) -> str:
     intent = state.get("intent")
-    if intent == "translation":
-        return "evaluate_translation"
-    if intent == "idk":
-        return "lookup_target_meaning"
-    if intent == "asks_meaning":
-        return "lookup_asked_meaning"
-    return "skip"
+    if intent is None:
+        return _DEFAULT_AFTER_CLASSIFY
+    return _ROUTE_AFTER_CLASSIFY.get(intent, _DEFAULT_AFTER_CLASSIFY)
 
 
 async def passthrough_node(state: BTPKetState, config: RunnableConfig) -> dict:
