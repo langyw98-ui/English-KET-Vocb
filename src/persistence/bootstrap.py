@@ -4,6 +4,7 @@
 init_db opens a connection, runs migration, applies the schema, seeds the
 default user + kid_profile, and optionally imports the KET vocabulary CSV.
 """
+import asyncio
 import csv
 import sqlite3
 from pathlib import Path
@@ -43,33 +44,43 @@ async def init_db(
     return db
 
 
-async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:
-    """Import KET vocabulary from CSV. Private — only bootstrap.py calls this.
+def _read_csv_rows(csv_path: str) -> list[dict[str, str]]:
+    """同步读 CSV 全部行。供 asyncio.to_thread 调用。
 
-    Copy body verbatim from src/flow/ket_partner/db.py:737-762.
+    csv.Error / 解析问题由调用方处理。
     """
-    with open(csv_path, "r", encoding="utf-8-sig") as f:  # noqa: ASYNC230
+    rows: list[dict[str, str]] = []
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        count = 0
         for row in reader:
-            word = (row.get("word") or "").strip()
-            pos = (row.get("part_of_speech") or "").strip()
-            topic_raw = (row.get("topic") or "").strip()
-            context = (row.get("context") or "").strip()
-            if not word:
-                continue
-            topics = [t.strip() for t in topic_raw.split(";") if t.strip()]
+            rows.append(dict(row))
+    return rows
+
+
+async def _import_csv(db: aiosqlite.Connection, csv_path: str) -> None:
+    """Import KET vocabulary from CSV. Private — only bootstrap.py calls this."""
+    rows = await asyncio.to_thread(_read_csv_rows, csv_path)
+    count = 0
+    for row in rows:
+        word = (row.get("word") or "").strip()
+        pos = (row.get("part_of_speech") or "").strip()
+        topic_raw = (row.get("topic") or "").strip()
+        context = (row.get("context") or "").strip()
+        # 必要字段缺失则跳过(P2 #24)
+        if not word or not pos:
+            continue
+        topics = [t.strip() for t in topic_raw.split(";") if t.strip()]
+        await db.execute(
+            "INSERT OR IGNORE INTO ket_vocabulary (word, context, pos, is_seed) "
+            "VALUES (?, ?, ?, 0)",
+            (word, context, pos),
+        )
+        for t in topics:
             await db.execute(
-                "INSERT OR IGNORE INTO ket_vocabulary (word, context, pos, is_seed) "
-                "VALUES (?, ?, ?, 0)",
-                (word, context, pos),
+                "INSERT OR IGNORE INTO ket_vocab_topics (word, context, topic) "
+                "VALUES (?, ?, ?)",
+                (word, context, t),
             )
-            for t in topics:
-                await db.execute(
-                    "INSERT OR IGNORE INTO ket_vocab_topics (word, context, topic) "
-                    "VALUES (?, ?, ?)",
-                    (word, context, t),
-                )
-            count += 1
-        await db.commit()
-        logger.info(f"Imported {count} rows from {csv_path}")
+        count += 1
+    await db.commit()
+    logger.info(f"Imported {count} rows from {csv_path}")
